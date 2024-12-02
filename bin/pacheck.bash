@@ -7,6 +7,64 @@
 #optdepends:
 #yay
 
+# Add process group management
+set -m  # Enable job control
+
+# Process management
+declare -a CHILD_PIDS
+MAX_CONCURRENT_PROCESSES=4  # Limit concurrent processes
+CLEANUP_IN_PROGRESS=0
+
+# Trap function to handle Ctrl+C and cleanup
+cleanup() {
+    # Prevent recursive cleanup
+    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+        return
+    fi
+    CLEANUP_IN_PROGRESS=1
+
+    # Only print message once from parent
+    if [ $$ = $PPID ]; then
+        echo -e "\n${COL_YELLOW}Cancelling search...${COL_RESET}"
+    fi
+    
+    # Remove the trap first to prevent recursive trapping
+    trap - SIGINT SIGTERM EXIT
+    
+    # Kill child processes more gracefully
+    if [ ${#CHILD_PIDS[@]} -gt 0 ]; then
+        for pid in "${CHILD_PIDS[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -TERM "$pid" 2>/dev/null || true
+            fi
+        done
+    fi
+
+    # Clean up any remaining processes in the group
+    pkill -P $$ 2>/dev/null || true
+    
+    # Remove lock file
+    rm -f /tmp/pacheck.lock
+    
+    exit 0
+}
+
+# Set up traps
+trap cleanup SIGINT SIGTERM EXIT
+
+# Function to manage background processes
+manage_processes() {
+    while [ $(jobs -p | wc -l) -ge $MAX_CONCURRENT_PROCESSES ]; do
+        wait -n 2>/dev/null || break
+    done
+}
+
+# Function to add child PID to tracking array
+track_child() {
+    CHILD_PIDS+=("$1")
+    manage_processes
+}
+
 # pretty sh colors
 COL_RESET="\e[0m"
 COL_BOLD="\e[1m"
@@ -71,7 +129,6 @@ process_installed_pkgs() {
         flock -x 200
         printf "%b" "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}\n"
         
-        # Add description with search term highlighting if -d flag is used
         if [ -n "$description" ]; then
             if [ "$search_desc" = true ]; then
                 local highlighted_desc="$description"
@@ -96,10 +153,12 @@ process_installed_pkgs() {
             printf "%b" "${COL_GREEN}   $CHECK_MARK Up to date${COL_RESET}\n"
         fi
         printf "\n"
-    } 200>/tmp/pacheck.lock
+    } 200>/tmp/pacheck.lock &
+    
+    track_child $!
 }
 
-# arch official remote
+# remote repo handling...pacman is slow af compared to yay
 process_remote_pkg() {
     local repo=$1
     local pkg=$2
@@ -127,7 +186,10 @@ process_remote_pkg() {
         fi
         echo -e "${COL_BLUE}└─ Available in official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}"
         echo
-    } 200>/tmp/pacheck.lock
+    } 200>/tmp/pacheck.lock &
+    
+    # Track the background process
+    track_child $!
 }
 
 
@@ -389,9 +451,7 @@ pkgcheck() {
             found_packages[$pkg]=1
             process_installed_pkgs "$pkg" &
             
-            while [ $(jobs -p | wc -l) -ge 10 ]; do
-                wait -n
-            done
+            manage_processes
         fi
     done <<< "$installed_pkgs"
 
@@ -552,9 +612,7 @@ fi
                             process_remote_pkg "$repo" "$pkg" "$vers" &
 
                             # Limit concurrent processes
-                            while [ $(jobs -p | wc -l) -ge 10 ]; do
-                                wait -n
-                            done
+                            manage_processes
                         fi
                     done <<< "$remote_pkgs"
                     
@@ -632,6 +690,13 @@ fi
 }
 
 main() {
+    # Initialize empty CHILD_PIDS array
+    CHILD_PIDS=()
+    CLEANUP_IN_PROGRESS=0
+    
+    # Remove any stale lock file
+    rm -f /tmp/pacheck.lock
+    
     # check for yay
     if ! pacman -Qi yay &>/dev/null; then
         echo -e "\e[33mWarning: 'yay' is not installed. AUR functionality will be disabled.\e[0m"
@@ -645,7 +710,9 @@ main() {
         # yay is installed, run normally
         pkgcheck "$@"
     fi
+    
+    # Wait for all background processes to complete
+    wait 2>/dev/null || true
 }
 
 main "$@"
-                
