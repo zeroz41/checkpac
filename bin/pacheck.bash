@@ -3,7 +3,7 @@
 #made by zeroz/tj
 
 #dependencies:
-#pacman,expac
+#pacman,expac,flock
 #optdepends:
 #yay
 
@@ -54,16 +54,15 @@ get_repo_type() {
     esac
 }
 
-BATCH_SIZE=30 # Number of packages to process simultaneously 
-
 process_installed_pkgs() {
     local pkg=$1
-    local output_file=$2
     local current_version="${pkg_versions[$pkg]}"
     local repo_type=$(get_repo_type "$pkg")
     local remote_version=$(pacman -Si "$pkg" 2>/dev/null | grep "^Version" | cut -d: -f2- | tr -d ' ')
     
+    # Use flock to prevent output interleaving
     {
+        flock -x 200
         echo -e "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}"
         echo -e "${COL_BLUE}└─ Source: Official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}"
         
@@ -77,7 +76,7 @@ process_installed_pkgs() {
             echo -e "${COL_GREEN}   $CHECK_MARK Up to date${COL_RESET}"
         fi
         echo
-    } > "$output_file"
+    } 200>"/tmp/pacheck.lock"
 }
 
 # generate a hash for repos color based on it's name. If its unique...
@@ -377,7 +376,9 @@ pkgcheck() {
         # remove duplicates while preserving order
         installed_pkgs=$(echo "$installed_pkgs" | awk '!seen[$0]++')
 
-        # Process packages in batches of 10
+        BATCH_SIZE=20 # Number of packages to process simultaneously 
+
+        # Process packages in batches of BATCH_SIZE
         while IFS= read -r line; do
             local pkg=$(echo "$line" | cut -d' ' -f1)
             if [[ -n "$pkg" ]] && ! echo "$aur_cache" | grep -q "^${pkg} "; then
