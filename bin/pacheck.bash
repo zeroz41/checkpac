@@ -86,10 +86,9 @@ COL_LIGHT_MAGENTA="\e[95m"
 # Function to get package repo type and color
 get_repo_type() {
     local pkg=$1
-    # Use pacman -Si to get repository info
-    local repo_info=$(pacman -Si "$pkg" 2>/dev/null | grep "^Repository" | awk '{print $3}')
+    local repo=$2  # Now passed in directly
     
-    case "$repo_info" in
+    case "$repo" in
         "core") echo -e "${COL_RED}core${COL_RESET}";;
         "extra") echo -e "${COL_GREEN}extra${COL_RESET}";;
         "community") echo -e "${COL_MAGENTA}community${COL_RESET}";;
@@ -98,32 +97,54 @@ get_repo_type() {
         "community-testing") echo -e "\e[38;2;255;165;0mcommunity-testing${COL_RESET}";; # orange
         "extra-testing") echo -e "\e[38;2;138;43;226mextra-testing${COL_RESET}";; # blueviolet
         "multilib-testing") echo -e "\e[38;2;219;112;147mmultilib-testing${COL_RESET}";; # palevioletred
-        "")
-            # Use cached package list instead of pacman -Sl
-            local repo=$(echo "$official_info" | grep " $pkg " | cut -d' ' -f1 | head -n1)
-            if [ -n "$repo" ]; then
-                # Use hash-based color for unknown repos
-                local color=$(get_hash_color "$repo")
-                echo -e "${color}${repo}${COL_RESET}"
-            else
-                echo ""
-            fi
-            ;;
         *)
             # Use hash-based color for unknown repos
-            local color=$(get_hash_color "$repo_info")
-            echo -e "${color}${repo_info}${COL_RESET}"
+            local color=$(get_hash_color "$repo")
+            echo -e "${color}${repo}${COL_RESET}"
             ;;
     esac
+}
+
+# Cache package data using expac
+cache_package_data() {
+    # Get all installed package info
+    declare -gA pkg_versions
+    while IFS=' ' read -r pkg version; do
+        pkg_versions[$pkg]=$version
+    done < <(pacman -Q)
+
+    # Debug: Show what expac is returning
+    #echo "DEBUG: First few lines of expac output:"
+    expac -S '%n\t%v\t%r\t%d' | head -n 3 >&2
+
+    # Cache official repo data using expac
+    declare -gA official_versions
+    declare -gA official_repos
+    declare -gA official_descriptions
+    
+    while IFS=$'\t' read -r name version repo description; do
+        # Debug: Show what we're parsing for a few packages
+        #[[ $name == lib32-* ]] && echo "DEBUG: Parsing $name | $version | $repo" >&2
+        
+        official_versions[$name]=$version
+        official_repos[$name]=$repo
+        official_descriptions[$name]=$description
+    done < <(expac -S '%n\t%v\t%r\t%d')
+    
+    # debug only echos
+    #echo "DEBUG: Cached data for lib32-libtheora:"
+    #echo "Version: ${official_versions[lib32-libtheora]}"
+    #echo "Repo: ${official_repos[lib32-libtheora]}"
 }
 
 # arch official installed
 process_installed_pkgs() {
     local pkg=$1
     local current_version="${pkg_versions[$pkg]}"
-    local repo_type=$(get_repo_type "$pkg")
-    local remote_version=$(pacman -Si "$pkg" 2>/dev/null | grep "^Version" | cut -d: -f2- | tr -d ' ')
-    local description=$(pacman -Qi "$pkg" 2>/dev/null | grep "^Description" | cut -d: -f2- | sed 's/^ //')
+    local remote_version="${official_versions[$pkg]}"
+    local repo="${official_repos[$pkg]}"
+    local description="${official_descriptions[$pkg]}"
+    local repo_type=$(get_repo_type "$pkg" "$repo")
     
     {
         flock -x 200
@@ -160,15 +181,11 @@ process_installed_pkgs() {
 
 # remote repo handling...pacman is slow af compared to yay
 process_remote_pkg() {
-    local repo=$1
-    local pkg=$2
-    local vers=$3
-    local repo_type=$(get_repo_type "$pkg")
-    local description
-
-    if [ "$search_desc" = true ]; then
-        description=$(pacman -Si "$pkg" 2>/dev/null | grep "^Description" | cut -d: -f2- | sed 's/^ //')
-    fi
+    local pkg=$1
+    local vers="${official_versions[$pkg]}"
+    local repo="${official_repos[$pkg]}"
+    local description="${official_descriptions[$pkg]}"
+    local repo_type=$(get_repo_type "$pkg" "$repo")
 
     {
         flock -x 200
@@ -188,9 +205,9 @@ process_remote_pkg() {
         echo
     } 200>/tmp/pacheck.lock &
     
-    # Track the background process
     track_child $!
 }
+
 
 
 # generate a hash for repos color based on it's name. If its unique...
@@ -399,6 +416,9 @@ pkgcheck() {
         show_help
         return 1
     fi
+    
+    #cache the data
+    cache_package_data
 
     echo -e "${COL_BOLD}Searching for packages: ${search_terms[*]}${COL_RESET}\n"
 
