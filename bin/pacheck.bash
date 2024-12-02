@@ -23,12 +23,13 @@ COL_DIM="\e[2m"
 COL_BG_YELLOW="\e[43m"
 COL_BLACK="\e[30m"
 COL_HIGHLIGHT="\e[94m"  # light blue
+COL_LIGHT_MAGENTA="\e[95m"
 
 # Function to get package repo type and color
 get_repo_type() {
     local pkg=$1
-    # Use pacman -Q to get repository info from local database instead of -Si
-    local repo_info=$(pacman -Qi "$pkg" 2>/dev/null | grep "Repository" | awk '{print $3}')
+    # Use pacman -Si to get repository info
+    local repo_info=$(pacman -Si "$pkg" 2>/dev/null | grep "^Repository" | awk '{print $3}')
     
     case "$repo_info" in
         "core") echo -e "${COL_RED}core${COL_RESET}";;
@@ -111,39 +112,6 @@ get_hash_color() {
     g=$(( (g + 128) % 256 ))
     b=$(( (b + 128) % 256 ))
     echo "\e[38;2;${r};${g};${b}m"
-}
-
-# get package repo type and color
-get_repo_type() {
-    local pkg=$1
-    local repo_info=$(pacman -Si "$pkg" 2>/dev/null | grep "Repository" | awk '{print $3}')
-    
-    case "$repo_info" in
-        "core") echo -e "${COL_RED}core${COL_RESET}";;
-        "extra") echo -e "${COL_GREEN}extra${COL_RESET}";;
-        "community") echo -e "${COL_MAGENTA}community${COL_RESET}";;
-        "multilib") echo -e "${COL_CYAN}multilib${COL_RESET}";;
-        "testing") echo -e "${COL_YELLOW}testing${COL_RESET}";;
-        "community-testing") echo -e "\e[38;2;255;165;0mcommunity-testing${COL_RESET}";; # orange
-        "extra-testing") echo -e "\e[38;2;138;43;226mextra-testing${COL_RESET}";; # blueviolet
-        "multilib-testing") echo -e "\e[38;2;219;112;147mmultilib-testing${COL_RESET}";; # palevioletred
-        "")
-            # Try to get repo from pacman -Sl for installed packages
-            local repo=$(pacman -Sl | grep " $pkg " | cut -d' ' -f1 | head -n1)
-            if [ -n "$repo" ]; then
-                # Use hash-based color for unknown repos
-                local color=$(get_hash_color "$repo")
-                echo -e "${color}${repo}${COL_RESET}"
-            else
-                echo ""
-            fi
-            ;;
-        *)
-            # Use hash-based color for unknown repos
-            local color=$(get_hash_color "$repo_info")
-            echo -e "${color}${repo_info}${COL_RESET}"
-            ;;
-    esac
 }
 
 fetch_aur_versions() {
@@ -438,9 +406,8 @@ fi
 
         aur_names=$(echo "$aur_pkgs" | cut -d' ' -f1 | tr '\n' ' ')
 
-        # Fetch all AUR versions in one go
+        # fetch all AUR versions
         fetch_aur_versions "$aur_names"
-        # Process AUR installed packages
         while IFS= read -r line; do
             local pkg=$(echo "$line" | cut -d' ' -f1)
             if [[ -n "$pkg" ]]; then
@@ -460,9 +427,11 @@ fi
                 if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
                     local pkg_type="${COL_CYAN}devel${COL_RESET}"
                 else
-                    local pkg_type="${COL_YELLOW}aur${COL_RESET}"
+                    # light purple
+                    local pkg_type="${COL_RED}aur${COL_RESET}"
                 fi
 
+                # Print package name first
                 echo -e "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}"
                 
                 # Add description handling
@@ -478,6 +447,7 @@ fi
                     fi
                 fi
 
+                # Print source line only once
                 echo -e "${COL_YELLOW}└─ Source: AUR [${COL_RESET}${pkg_type}${COL_YELLOW}]${COL_RESET}"
                 
                 if [[ -z "$remote_version" ]]; then
