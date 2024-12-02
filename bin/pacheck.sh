@@ -18,28 +18,33 @@ show_help() {
     cat << EOF
 pacheck - Search and check status of Arch Linux packages
 
-Usage: pacheck [options] <search-term>
+Usage: pacheck [options] <search-terms...>
 
 Options:
     -h, --help     Show this help message
     -r, --remote   Include remote packages in search
     -d, --desc     Search package descriptions (requires expac)
+    -e, --exact    Match package names exactly (case insensitive)
 
 Examples:
     pacheck python         # Search installed packages for "python"
     pacheck -r node       # Search all packages (installed and remote)
     pacheck -d git        # Search names and descriptions
     pacheck -rd docker    # Search everything, everywhere
+    pacheck -e wine      # Search for exact package name match
+    pacheck wine steam    # Search for multiple packages
 
 Note: The -d flag requires 'expac' to be installed for optimal performance.
       Install it with: pacman -S expac
+      The -e flag overrides -d as exact matching doesn't use descriptions.
 EOF
 }
 
 pkgcheck() {
-    local search=""
     local check_remote=false
     local search_desc=false
+    local exact_match=false
+    local search_terms=()
     local CHECK_MARK=$'\u2714'
     local X_MARK=$'\u2718'
     local UP_ARROW=$'\u2191'
@@ -61,6 +66,11 @@ pkgcheck() {
                 search_desc=true
                 shift
                 ;;
+            -e|--exact)
+                exact_match=true
+                search_desc=false  # exact match overrides description search
+                shift
+                ;;
             -*)
                 if [[ "$1" =~ r ]]; then
                     check_remote=true
@@ -68,38 +78,41 @@ pkgcheck() {
                 if [[ "$1" =~ d ]]; then
                     search_desc=true
                 fi
+                if [[ "$1" =~ e ]]; then
+                    exact_match=true
+                    search_desc=false  # exact match overrides description search
+                fi
                 shift
                 ;;
             *)
-                search="$1"
+                search_terms+=("$1")
                 shift
                 ;;
         esac
     done
 
-    if [ -z "$search" ]; then
+    if [ ${#search_terms[@]} -eq 0 ]; then
         show_help
         return 1
     fi
 
-    echo -e "${COL_BOLD}Searching for packages containing '$search'...${COL_RESET}\n"
+    echo -e "${COL_BOLD}Searching for packages: ${search_terms[*]}${COL_RESET}\n"
 
-    # Track found packages to avoid duplicates
+    # avoid duplicates
     declare -A found_packages
     declare -A pkg_versions
     declare -A remote_versions
 
-    # Cache common package information
+    # caching
     local all_installed_info=$(pacman -Q)
     local aur_cache=$(pacman -Qm)
     local official_info=$(pacman -Sl)
 
-    # Cache installed package versions
     while IFS=' ' read -r pkg version; do
         pkg_versions[$pkg]=$version
     done <<< "$all_installed_info"
 
-    # Cache official remote versions
+    # cache official remote versions
     while IFS=' ' read -r repo pkg version rest; do
         remote_versions[$pkg]=$version
     done <<< "$official_info"
@@ -110,15 +123,39 @@ pkgcheck() {
     local installed_count=0
 
     # official repos installed packages
-    if [ "$search_desc" = true ] && command -v expac >/dev/null 2>&1; then
-        local installed_pkgs=$(expac '%n %d' | grep -i "$search")
+    local installed_pkgs=""
+    if [ "$exact_match" = true ]; then
+        for term in "${search_terms[@]}"; do
+            if [ -n "$installed_pkgs" ]; then
+                installed_pkgs="$installed_pkgs"$'\n'"$(echo "$all_installed_info" | grep -i "^${term} ")"
+            else
+                installed_pkgs="$(echo "$all_installed_info" | grep -i "^${term} ")"
+            fi
+        done
+    elif [ "$search_desc" = true ] && command -v expac >/dev/null 2>&1; then
+        for term in "${search_terms[@]}"; do
+            if [ -n "$installed_pkgs" ]; then
+                installed_pkgs="$installed_pkgs"$'\n'"$(expac '%n %d' | grep -i "$term")"
+            else
+                installed_pkgs="$(expac '%n %d' | grep -i "$term")"
+            fi
+        done
     else
-        local installed_pkgs=$(echo "$all_installed_info" | grep -i "^${search}")
+        for term in "${search_terms[@]}"; do
+            if [ -n "$installed_pkgs" ]; then
+                installed_pkgs="$installed_pkgs"$'\n'"$(echo "$all_installed_info" | grep -i "$term")"
+            else
+                installed_pkgs="$(echo "$all_installed_info" | grep -i "$term")"
+            fi
+        done
     fi
+
+    # remove duplicates while preserving order
+    installed_pkgs=$(echo "$installed_pkgs" | awk '!seen[$0]++')
 
     while IFS= read -r line; do
         local pkg=$(echo "$line" | cut -d' ' -f1)
-        # Skip AUR
+        # Skip AUR and empty lines
         if [[ -n "$pkg" ]] && ! echo "$aur_cache" | grep -q "^${pkg} "; then
             installed_count=$((installed_count + 1))
             found_packages[$pkg]=1
@@ -145,11 +182,35 @@ pkgcheck() {
 
     # AUR installed packages
     local found_aur=false
-    if [ "$search_desc" = true ] && command -v expac >/dev/null 2>&1; then
-        local aur_pkgs=$(expac -Q '%n %d' | grep -i "$search" | grep -f <(echo "$aur_cache" | cut -d' ' -f1))
+    local aur_pkgs=""
+    if [ "$exact_match" = true ]; then
+        for term in "${search_terms[@]}"; do
+            if [ -n "$aur_pkgs" ]; then
+                aur_pkgs="$aur_pkgs"$'\n'"$(echo "$aur_cache" | grep -i "^${term} ")"
+            else
+                aur_pkgs="$(echo "$aur_cache" | grep -i "^${term} ")"
+            fi
+        done
+    elif [ "$search_desc" = true ] && command -v expac >/dev/null 2>&1; then
+        for term in "${search_terms[@]}"; do
+            if [ -n "$aur_pkgs" ]; then
+                aur_pkgs="$aur_pkgs"$'\n'"$(expac -Q '%n %d' | grep -i "$term" | grep -f <(echo "$aur_cache" | cut -d' ' -f1))"
+            else
+                aur_pkgs="$(expac -Q '%n %d' | grep -i "$term" | grep -f <(echo "$aur_cache" | cut -d' ' -f1))"
+            fi
+        done
     else
-        local aur_pkgs=$(echo "$aur_cache" | grep -i "^${search}")
+        for term in "${search_terms[@]}"; do
+            if [ -n "$aur_pkgs" ]; then
+                aur_pkgs="$aur_pkgs"$'\n'"$(echo "$aur_cache" | grep -i "$term")"
+            else
+                aur_pkgs="$(echo "$aur_cache" | grep -i "$term")"
+            fi
+        done
     fi
+
+    # Remove duplicates while preserving order
+    aur_pkgs=$(echo "$aur_pkgs" | awk '!seen[$0]++')
 
     while IFS= read -r line; do
         local pkg=$(echo "$line" | cut -d' ' -f1)
@@ -186,15 +247,23 @@ pkgcheck() {
 
         # search official and aur
         {
-            # Stream official repo results
-            if [ "$search_desc" = true ]; then
-                # Search with descriptions
-                pacman -Ss "$search"
+            # stream official repo results
+            if [ "$exact_match" = true ]; then
+                for term in "${search_terms[@]}"; do
+                    # Use pacman -Sl directly for getting package info
+                    pacman -Sl | grep -i "^[^ ]* ${term}$" | while read -r repo pkg version rest; do
+                        echo "repo/$pkg $version"
+                    done
+                done
+            elif [ "$search_desc" = true ]; then
+                for term in "${search_terms[@]}"; do
+                    pacman -Ss "$term"
+                done
             else
-                # Name-only search
-                pacman -Slq | grep -i "^${search}$" | while read -r pkg; do
-                    pacman -Si "$pkg" 2>/dev/null | grep -E "^Name|^Version" | paste - - | \
-                    sed -n 's/Name[[:space:]]*:[[:space:]]*\([^[:space:]]*\).*Version[[:space:]]*:[[:space:]]*\([^[:space:]]*\).*/repo\/\1 \2/p'
+                for term in "${search_terms[@]}"; do
+                    pacman -Sl | grep -i "$term" | while read -r repo pkg version rest; do
+                        echo "repo/$pkg $version"
+                    done
                 done
             fi | while IFS= read -r line; do
                 if [[ -n "$line" ]] && [[ $line =~ ^[^\ ] ]]; then
@@ -218,13 +287,68 @@ pkgcheck() {
 
         # print aur remote as we get them
         {
-            if [ "$search_desc" = true ]; then
-                yay -Ssa "$search" 2>/dev/null
+            if [ "$exact_match" = true ]; then
+                for term in "${search_terms[@]}"; do
+                    # Use yay -Ss with grep for exact matches
+                    yay -Ss "^$term$" 2>/dev/null | grep -E "^aur/" | cut -d'/' -f2- | grep -Ev "^[[:space:]]" | while read -r line; do
+                        pkg=$(echo "$line" | cut -d' ' -f1)
+                        version=$(echo "$line" | cut -d' ' -f2)
+                        echo "aur/$pkg $version"
+                    done
+                done
+            elif [ "$search_desc" = true ]; then
+                for term in "${search_terms[@]}"; do
+                    yay -Ssa "$term" 2>/dev/null
+                done
             else
-                # Use -Ssq for exact match on package names
-                yay -Ssq "^${search}$" 2>/dev/null | while read -r pkg; do
-                    yay -Si "$pkg" 2>/dev/null | grep -E "^Name|^Version" | paste - - | \
-                    sed -n 's/Name[[:space:]]*:[[:space:]]*\([^[:space:]]*\).*Version[[:space:]]*:[[:space:]]*\([^[:space:]]*\).*/aur\/\1 \2/p'
+                for term in "${search_terms[@]}"; do
+                    yay -Ss "$term" 2>/dev/null | grep -E "^aur/" | cut -d'/' -f2- | grep -Ev "^[[:space:]]" | while read -r line; do
+                        pkg=$(echo "$line" | cut -d' ' -f1)
+                        version=$(echo "$line" | cut -d' ' -f2)
+                        echo "aur/$pkg $version"
+                    done
+                done
+            fi | while IFS= read -r line; do
+                if [[ $line =~ ^aur/ ]]; then
+                    local pkg=$(echo "$line" | cut -d'/' -f2 | cut -d' ' -f1)
+                    local version=$(echo "$line" | cut -d' ' -f2)
+                    if [[ -n "$pkg" ]] && [[ -z "${found_packages[$pkg]}" ]]; then
+                        if [[ "$found_remote_aur" == false ]]; then
+                            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+                            echo -e "${COL_BOLD_YELLOW}AUR Available:${COL_RESET}"
+                            found_remote_aur=true
+                        fi
+                        remote_count=$((remote_count + 1))
+                        found_packages[$pkg]=1
+                        echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
+                        echo -e "${COL_YELLOW}└─ Available in AUR${COL_RESET}"
+                        echo
+                    fi
+                fi
+            done
+        } &
+
+        # print aur remote as we get them
+        {
+            if [ "$exact_match" = true ]; then
+                for term in "${search_terms[@]}"; do
+                    yay -Ssq "^${term}$" 2>/dev/null | while read -r pkg; do
+                        yay -Si "$pkg" 2>/dev/null | grep -E "^Name|^Version" | paste - - | \
+                        sed -n 's/Name[[:space:]]*:[[:space:]]*\([^[:space:]]*\).*Version[[:space:]]*:[[:space:]]*\([^[:space:]]*\).*/aur\/\1 \2/p'
+                    done
+                done
+            elif [ "$search_desc" = true ]; then
+                for term in "${search_terms[@]}"; do
+                    yay -Ssa "$term" 2>/dev/null
+                done
+            else
+                # Changed to use yay -Ss with grep to filter names only
+                for term in "${search_terms[@]}"; do
+                    yay -Ss "$term" 2>/dev/null | grep -E "^aur/" | cut -d'/' -f2- | grep -Ev "^[[:space:]]" | while read -r line; do
+                        pkg=$(echo "$line" | cut -d' ' -f1)
+                        version=$(echo "$line" | cut -d' ' -f2)
+                        echo "aur/$pkg $version"
+                    done
                 done
             fi | while IFS= read -r line; do
                 if [[ $line =~ ^aur/ ]]; then
