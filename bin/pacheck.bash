@@ -59,7 +59,7 @@ get_repo_type() {
     esac
 }
 
-
+# arch official installed
 process_installed_pkgs() {
     local pkg=$1
     local current_version="${pkg_versions[$pkg]}"
@@ -96,6 +96,37 @@ process_installed_pkgs() {
             printf "%b" "${COL_GREEN}   $CHECK_MARK Up to date${COL_RESET}\n"
         fi
         printf "\n"
+    } 200>/tmp/pacheck.lock
+}
+
+# arch official remote
+process_remote_pkg() {
+    local repo=$1
+    local pkg=$2
+    local vers=$3
+    local repo_type=$(get_repo_type "$pkg")
+    local description
+
+    if [ "$search_desc" = true ]; then
+        description=$(pacman -Si "$pkg" 2>/dev/null | grep "^Description" | cut -d: -f2- | sed 's/^ //')
+    fi
+
+    {
+        flock -x 200
+        echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$vers)${COL_RESET}"
+        if [ -n "$description" ]; then
+            if [ "$search_desc" = true ]; then
+                local highlighted_desc="$description"
+                for term in "${search_terms[@]}"; do
+                    highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
+                done
+                printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+            else
+                printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+            fi
+        fi
+        echo -e "${COL_BLUE}└─ Available in official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}"
+        echo
     } 200>/tmp/pacheck.lock
 }
 
@@ -466,61 +497,72 @@ fi
 
     # remote check if -r flag
     if [ "$check_remote" = true ]; then
-    local remote_count=0
-    local found_official=false
-    local found_remote_aur=false
+        local remote_count=0
+        local found_official=false
+        local found_remote_aur=false
 
-    {
-        if [ "$exclude_arch" = false ]; then
-            if [ "$exact_match" = true ]; then
-                for term in "${search_terms[@]}"; do
-                    pacman -Sl | grep -i "^[^ ]* ${term}$"
-                done
-            elif [ "$search_desc" = true ]; then
-                for term in "${search_terms[@]}"; do
-                    pacman -Ss "$term" | grep "^[^ ]*/[^ ]*"
-                done
-            else
-                for term in "${search_terms[@]}"; do
-                    pacman -Sl | grep -i "$term"
-                done
-            fi | while read -r repo pkg vers rest; do
-                # Extract package name correctly from repo/pkg format if needed
-                if [[ "$repo" == */* ]]; then
-                    pkg=$(echo "$repo" | cut -d'/' -f2)
-                    vers=$pkg
-                    pkg=$vers
-                fi
+        {
+            if [ "$exclude_arch" = false ]; then
+                local remote_pkgs=""
                 
-                if [[ -n "$pkg" ]] && ! pacman -Q "$pkg" &>/dev/null && [[ -z "${found_packages[$pkg]}" ]]; then
-                    if [[ "$found_official" == false ]]; then
-                        echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
-                        echo -e "${COL_BOLD_BLUE}Official Repositories Available:${COL_RESET}"
-                        found_official=true
-                    fi
-                    remote_count=$((remote_count + 1))
-                    found_packages[$pkg]=1
-                    local repo_type=$(get_repo_type "$pkg")
-                    local description=$(pacman -Si "$pkg" 2>/dev/null | grep "^Description" | cut -d: -f2- | sed 's/^ //')
-
-                    echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$vers)${COL_RESET}"
-                    if [ -n "$description" ]; then
-                        if [ "$search_desc" = true ]; then
-                            local highlighted_desc="$description"
-                            for term in "${search_terms[@]}"; do
-                                highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
-                            done
-                            printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+                if [ "$exact_match" = true ]; then
+                    for term in "${search_terms[@]}"; do
+                        if [ -n "$remote_pkgs" ]; then
+                            remote_pkgs="$remote_pkgs"$'\n'"$(pacman -Sl | grep -i "^[^ ]* ${term}$")"
                         else
-                            printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+                            remote_pkgs="$(pacman -Sl | grep -i "^[^ ]* ${term}$")"
                         fi
-                    fi
-                    echo -e "${COL_BLUE}└─ Available in official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}"
-                    echo
+                    done
+                elif [ "$search_desc" = true ]; then
+                    for term in "${search_terms[@]}"; do
+                        if [ -n "$remote_pkgs" ]; then
+                            remote_pkgs="$remote_pkgs"$'\n'"$(pacman -Ss "$term" | grep "^[^ ]*/[^ ]*")"
+                        else
+                            remote_pkgs="$(pacman -Ss "$term" | grep "^[^ ]*/[^ ]*")"
+                        fi
+                    done
+                else
+                    for term in "${search_terms[@]}"; do
+                        if [ -n "$remote_pkgs" ]; then
+                            remote_pkgs="$remote_pkgs"$'\n'"$(pacman -Sl | grep -i "$term")"
+                        else
+                            remote_pkgs="$(pacman -Sl | grep -i "$term")"
+                        fi
+                    done
                 fi
-            done
-        fi
-    } &
+
+                if [ -n "$remote_pkgs" ]; then
+                    echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+                    echo -e "${COL_BOLD_BLUE}Official Repositories Available:${COL_RESET}"
+                    found_official=true
+
+                    while IFS= read -r line; do
+                        local repo pkg vers rest
+                        if [[ "$line" == */* ]]; then
+                            repo=$(echo "$line" | cut -d'/' -f1)
+                            pkg=$(echo "$line" | cut -d'/' -f2 | cut -d' ' -f1)
+                            vers=$(echo "$line" | cut -d' ' -f2)
+                        else
+                            read -r repo pkg vers rest <<< "$line"
+                        fi
+
+                        if [[ -n "$pkg" ]] && ! pacman -Q "$pkg" &>/dev/null && [[ -z "${found_packages[$pkg]}" ]]; then
+                            remote_count=$((remote_count + 1))
+                            found_packages[$pkg]=1
+                            process_remote_pkg "$repo" "$pkg" "$vers" &
+
+                            # Limit concurrent processes
+                            while [ $(jobs -p | wc -l) -ge 10 ]; do
+                                wait -n
+                            done
+                        fi
+                    done <<< "$remote_pkgs"
+                    
+                    # Wait for remaining background processes
+                    wait
+                fi
+            fi
+        } &
 
         # print aur remote if not excluded
         if [ "$exclude_aur" = false ]; then
