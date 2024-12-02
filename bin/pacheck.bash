@@ -2,6 +2,11 @@
 
 #made by zeroz/tj
 
+#dependencies:
+#pacman,expac
+#optdepends:
+#yay
+
 # pretty sh colors
 COL_RESET="\e[0m"
 COL_BOLD="\e[1m"
@@ -15,10 +20,11 @@ COL_BOLD_YELLOW="\e[1;33m"
 COL_BOLD_BLUE="\e[1;34m"
 
 show_help() {
+    local script_name=$(basename "$0")
     cat << EOF
-pacheck - Search and check status of Arch Linux packages
+${script_name} - Search and check status of Arch Linux packages
 
-Usage: pacheck [options] <search-terms...>
+Usage: ${script_name} [options] <search-terms...>
 
 Options:
     -h, --help          Show this help message
@@ -29,17 +35,16 @@ Options:
     --exclude-arch      Exclude official Arch repository packages from search results
 
 Examples:
-    pacheck python              # Search installed packages for "python"
-    pacheck -r node            # Search all packages (installed and remote)
-    pacheck -d git             # Search names and descriptions
-    pacheck -rd docker         # Search everything, everywhere
-    pacheck -e wine           # Search for exact package name match
-    pacheck --exclude-aur git  # Search only in official repositories
-    pacheck --exclude-arch git # Search only in AUR
+    ${script_name} python              # Search installed packages for "python"
+    ${script_name} -r node             # Search all packages (installed and remote)
+    ${script_name} -d git              # Search names and descriptions
+    ${script_name} -rd docker          # Search everything, everywhere
+    ${script_name} -e wine             # Search for exact package name match
+    ${script_name} --exclude-aur git   # Search only in official repositories
+    ${script_name} --exclude-arch git  # Search only in AUR
 
-Note: The -d flag requires 'expac' to be installed for optimal performance.
-      Install it with: pacman -S expac
-      The -e flag overrides -d as exact matching doesn't use descriptions.
+Note:
+    The -e flag overrides -d as exact matching doesn't use descriptions.
 EOF
 }
 
@@ -378,7 +383,20 @@ pkgcheck() {
     fi
 }
 
-# run
-if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-    pkgcheck "$@"
-fi
+main() {
+    # check for yay
+    if ! pacman -Qi yay &>/dev/null; then
+        echo -e "\e[33mWarning: 'yay' is not installed. AUR functionality will be disabled.\e[0m"
+        # If no yay, turn on exclude aur flag if not already present
+        if [[ ! " $@ " =~ " --exclude-aur " ]]; then
+            pkgcheck "$@" --exclude-aur
+        else
+            pkgcheck "$@"
+        fi
+    else
+        # yay is installed, run normally
+        pkgcheck "$@"
+    fi
+}
+
+main "$@"
