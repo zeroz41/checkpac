@@ -23,13 +23,33 @@ COL_BOLD_BLUE="\e[1;34m"
 # Function to get package repo type and color
 get_repo_type() {
     local pkg=$1
-    local repo_type=$(pacman -Si "$pkg" 2>/dev/null | grep "Repository" | awk '{print $3}')
+    local repo_info=$(pacman -Syi "$pkg" 2>/dev/null | grep "Repository" | awk '{print $3}')
     
-    case "$repo_type" in
+    case "$repo_info" in
         "core") echo -e "${COL_RED}core${COL_RESET}";;
         "extra") echo -e "${COL_GREEN}extra${COL_RESET}";;
         "community") echo -e "${COL_MAGENTA}community${COL_RESET}";;
-        *) echo "";;
+        "multilib") echo -e "${COL_CYAN}multilib${COL_RESET}";;
+        "testing") echo -e "${COL_YELLOW}testing${COL_RESET}";;
+        "community-testing") echo -e "\e[38;2;255;165;0mcommunity-testing${COL_RESET}";; # orange
+        "extra-testing") echo -e "\e[38;2;138;43;226mextra-testing${COL_RESET}";; # blueviolet
+        "multilib-testing") echo -e "\e[38;2;219;112;147mmultilib-testing${COL_RESET}";; # palevioletred
+        "")
+            # Try to get repo from pacman -Sl for installed packages
+            local repo=$(pacman -Sl | grep " $pkg " | cut -d' ' -f1 | head -n1)
+            if [ -n "$repo" ]; then
+                # Use hash-based color for unknown repos
+                local color=$(get_hash_color "$repo")
+                echo -e "${color}${repo}${COL_RESET}"
+            else
+                echo ""
+            fi
+            ;;
+        *)
+            # Use hash-based color for unknown repos
+            local color=$(get_hash_color "$repo_info")
+            echo -e "${color}${repo_info}${COL_RESET}"
+            ;;
     esac
 }
 
@@ -195,6 +215,7 @@ EOF
 }
 
 pkgcheck() {
+    
     local check_remote=false
     local search_desc=false
     local exact_match=false
@@ -288,13 +309,6 @@ pkgcheck() {
         pkg_versions[$pkg]=$version
     done <<< "$all_installed_info"
 
-    # cache official remote versions
-    if [ "$exclude_arch" = false ]; then
-        while IFS=' ' read -r repo pkg version rest; do
-            remote_versions[$pkg]=$version
-        done <<< "$official_info"
-    fi
-
     # local official check
     if [ "$exclude_arch" = false ]; then
         echo -e "${COL_BOLD_CYAN}Official Repositories Installed:${COL_RESET}"
@@ -341,6 +355,13 @@ pkgcheck() {
                 local current_version="${pkg_versions[$pkg]}"
                 local remote_version="${remote_versions[$pkg]}"
                 local repo_type=$(get_repo_type "$pkg")
+
+                #GET REMOTES
+                local remote_version=$(pacman -Syi "$pkg" 2>/dev/null | grep "^Version" | cut -d: -f2- | tr -d ' ')
+                if [[ -z "$remote_version" ]]; then
+                    # Fallback to local db version if remote check fails
+                    remote_version=$(pacman -Si "$pkg" 2>/dev/null | grep "^Version" | cut -d: -f2- | tr -d ' ')
+                fi
 
                 echo -e "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}"
                 echo -e "${COL_BLUE}└─ Source: Official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}"
