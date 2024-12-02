@@ -60,23 +60,22 @@ process_installed_pkgs() {
     local repo_type=$(get_repo_type "$pkg")
     local remote_version=$(pacman -Si "$pkg" 2>/dev/null | grep "^Version" | cut -d: -f2- | tr -d ' ')
     
-    # Use flock to prevent output interleaving
     {
         flock -x 200
-        echo -e "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}"
-        echo -e "${COL_BLUE}└─ Source: Official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}"
+        printf "%b" "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}\n"
+        printf "%b" "${COL_BLUE}└─ Source: Official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}\n"
         
         if [[ -z "$remote_version" ]]; then
-            echo -e "${COL_YELLOW}   $WARNING Unable to fetch remote version${COL_RESET}"
+            printf "%b" "${COL_YELLOW}   $WARNING Unable to fetch remote version${COL_RESET}\n"
         elif [[ "$current_version" != "$remote_version" ]]; then
             local colored_current=$(compare_versions "$current_version" "$remote_version")
             local colored_remote=$(compare_versions "$remote_version" "$current_version")
-            echo -e "   ${COL_YELLOW}$UP_ARROW Update available: ${COL_RESET}v$colored_current -> v$colored_remote"
+            printf "%b" "   ${COL_YELLOW}$UP_ARROW Update available: ${COL_RESET}v$colored_current -> v$colored_remote\n"
         else
-            echo -e "${COL_GREEN}   $CHECK_MARK Up to date${COL_RESET}"
+            printf "%b" "${COL_GREEN}   $CHECK_MARK Up to date${COL_RESET}\n"
         fi
-        echo
-    } 200>"/tmp/pacheck.lock"
+        printf "\n"
+    } 200>/tmp/pacheck.lock
 }
 
 # generate a hash for repos color based on it's name. If its unique...
@@ -338,79 +337,50 @@ pkgcheck() {
 
     # local official check
     if [ "$exclude_arch" = false ]; then
-        echo -e "${COL_BOLD_CYAN}Official Repositories Installed:${COL_RESET}"
-        echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
-        local installed_count=0
+    echo -e "${COL_BOLD_CYAN}Official Repositories Installed:${COL_RESET}"
+    echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+    local installed_count=0
 
-        # official repos installed packages
-        local installed_pkgs=""
-        if [ "$exact_match" = true ]; then
-            for term in "${search_terms[@]}"; do
-                # Use grep on cached package info instead of querying pacman
-                if [ -n "$installed_pkgs" ]; then
-                    installed_pkgs="$installed_pkgs"$'\n'"$(echo "$all_installed_info" | grep -i "^${term} ")"
-                else
-                    installed_pkgs="$(echo "$all_installed_info" | grep -i "^${term} ")"
-                fi
-            done
-        elif [ "$search_desc" = true ] && command -v expac >/dev/null 2>&1; then
-            # Use parallel processing for expac queries
-            for term in "${search_terms[@]}"; do
-                if [ -n "$installed_pkgs" ]; then
-                    installed_pkgs="$installed_pkgs"$'\n'"$(expac '%n %d' | grep -i "$term" &)"
-                else
-                    installed_pkgs="$(expac '%n %d' | grep -i "$term" &)"
-                fi
-            done
-            wait
-        else
-            # Use grep on cached package info
-            for term in "${search_terms[@]}"; do
-                if [ -n "$installed_pkgs" ]; then
-                    installed_pkgs="$installed_pkgs"$'\n'"$(echo "$all_installed_info" | grep -i "$term")"
-                else
-                    installed_pkgs="$(echo "$all_installed_info" | grep -i "$term")"
-                fi
-            done
-        fi
-
-        # remove duplicates while preserving order
-        installed_pkgs=$(echo "$installed_pkgs" | awk '!seen[$0]++')
-
-        BATCH_SIZE=20 # Number of packages to process simultaneously 
-
-        # Process packages in batches of BATCH_SIZE
-        while IFS= read -r line; do
-            local pkg=$(echo "$line" | cut -d' ' -f1)
-            if [[ -n "$pkg" ]] && ! echo "$aur_cache" | grep -q "^${pkg} "; then
-                installed_count=$((installed_count + 1))
-                found_packages[$pkg]=1
-                local tmp_file=$(mktemp)
-                process_installed_pkgs "$pkg" "$tmp_file" &
-                tmp_files+=("$tmp_file")
+    # Get installed packages
+    local installed_pkgs=""
+    if [ "$exact_match" = true ]; then
+        for term in "${search_terms[@]}"; do
+            if [ -n "$installed_pkgs" ]; then
+                installed_pkgs="$installed_pkgs"$'\n'"$(pacman -Q | grep -i "^${term} ")"
+            else
+                installed_pkgs="$(pacman -Q | grep -i "^${term} ")"
             fi
-            ((batch_count++))
-            if ((batch_count % BATCH_SIZE == 0)); then
-                wait
-                for tmp_file in "${tmp_files[@]}"; do
-                    cat "$tmp_file"
-                    rm "$tmp_file"
-                done
-                tmp_files=()
-            fi
-        done <<< "$installed_pkgs"
-
-        # Print remaining files
-        wait
-        for tmp_file in "${tmp_files[@]}"; do
-            cat "$tmp_file"
-            rm "$tmp_file"
         done
-
-        if [ $installed_count -eq 0 ]; then
-            echo -e "${COL_RED}$X_MARK No installed packages found${COL_RESET}\n"
-        fi
+    else
+        for term in "${search_terms[@]}"; do
+            if [ -n "$installed_pkgs" ]; then
+                installed_pkgs="$installed_pkgs"$'\n'"$(pacman -Q | grep -i "$term")"
+            else
+                installed_pkgs="$(pacman -Q | grep -i "$term")"
+            fi
+        done
     fi
+
+    # Process installed packages
+    while IFS= read -r line; do
+        local pkg=$(echo "$line" | cut -d' ' -f1)
+        if [[ -n "$pkg" ]] && ! echo "$aur_cache" | grep -q "^${pkg} "; then
+            installed_count=$((installed_count + 1))
+            found_packages[$pkg]=1
+            process_installed_pkgs "$pkg" &
+            
+            while [ $(jobs -p | wc -l) -ge 10 ]; do
+                wait -n
+            done
+        fi
+    done <<< "$installed_pkgs"
+
+    wait
+
+    if [ $installed_count -eq 0 ]; then
+        echo -e "${COL_RED}$X_MARK No installed packages found${COL_RESET}\n"
+    fi
+fi
 
     # AUR installed packages
     if [ "$exclude_aur" = false ]; then
@@ -493,51 +463,48 @@ pkgcheck() {
 
     # remote check if -r flag
     if [ "$check_remote" = true ]; then
-        local remote_count=0
-        local found_official=false
-        local found_remote_aur=false
+    local remote_count=0
+    local found_official=false
+    local found_remote_aur=false
 
-        # search official and aur
-        {
-            # stream official repo results if not excluded
-            if [ "$exclude_arch" = false ]; then
-                if [ "$exact_match" = true ]; then
-                    for term in "${search_terms[@]}"; do
-                        pacman -Sl | grep -i "^[^ ]* ${term}$" | while read -r repo pkg version rest; do
-                            echo "repo/$pkg $version"
-                        done
-                    done
-                elif [ "$search_desc" = true ]; then
-                    for term in "${search_terms[@]}"; do
-                        pacman -Ss "$term"
-                    done
-                else
-                    for term in "${search_terms[@]}"; do
-                        pacman -Sl | grep -i "$term" | while read -r repo pkg version rest; do
-                            echo "repo/$pkg $version"
-                        done
-                    done
-                fi | while IFS= read -r line; do
-                    if [[ -n "$line" ]] && [[ $line =~ ^[^\ ] ]]; then
-                        local pkg=$(echo "$line" | cut -d'/' -f2 | cut -d' ' -f1)
-                        local version=$(echo "$line" | cut -d' ' -f2)
-                        if [[ -n "$pkg" ]] && [[ -z "${found_packages[$pkg]}" ]]; then
-                            if [[ "$found_official" == false ]]; then
-                                echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
-                                echo -e "${COL_BOLD_BLUE}Official Repositories Available:${COL_RESET}"
-                                found_official=true
-                            fi
-                            remote_count=$((remote_count + 1))
-                            found_packages[$pkg]=1
-                            local repo_type=$(get_repo_type "$pkg")
-                            echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
-                            echo -e "${COL_BLUE}└─ Available in official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}"
-                            echo
-                        fi
-                    fi
+    {
+        if [ "$exclude_arch" = false ]; then
+            if [ "$exact_match" = true ]; then
+                for term in "${search_terms[@]}"; do
+                    pacman -Sl | grep -i "^[^ ]* ${term}$"
                 done
-            fi
-        } &
+            elif [ "$search_desc" = true ]; then
+                for term in "${search_terms[@]}"; do
+                    pacman -Ss "$term" | grep "^[^ ]*/[^ ]*"
+                done
+            else
+                for term in "${search_terms[@]}"; do
+                    pacman -Sl | grep -i "$term"
+                done
+            fi | while read -r repo pkg vers rest; do
+                # Extract package name correctly from repo/pkg format if needed
+                if [[ "$repo" == */* ]]; then
+                    pkg=$(echo "$repo" | cut -d'/' -f2)
+                    vers=$pkg
+                    pkg=$vers
+                fi
+                
+                if [[ -n "$pkg" ]] && ! pacman -Q "$pkg" &>/dev/null && [[ -z "${found_packages[$pkg]}" ]]; then
+                    if [[ "$found_official" == false ]]; then
+                        echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+                        echo -e "${COL_BOLD_BLUE}Official Repositories Available:${COL_RESET}"
+                        found_official=true
+                    fi
+                    remote_count=$((remote_count + 1))
+                    found_packages[$pkg]=1
+                    local repo_type=$(get_repo_type "$pkg")
+                    echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$vers)${COL_RESET}"
+                    echo -e "${COL_BLUE}└─ Available in official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}"
+                    echo
+                fi
+            done
+        fi
+    } &
 
         # print aur remote if not excluded
         if [ "$exclude_aur" = false ]; then
