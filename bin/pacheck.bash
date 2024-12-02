@@ -19,6 +19,10 @@ COL_MAGENTA="\e[35m"
 COL_BOLD_CYAN="\e[1;36m"
 COL_BOLD_YELLOW="\e[1;33m"
 COL_BOLD_BLUE="\e[1;34m"
+COL_DIM="\e[2m"
+COL_BG_YELLOW="\e[43m"
+COL_BLACK="\e[30m"
+COL_HIGHLIGHT="\e[94m"  # light blue
 
 # Function to get package repo type and color
 get_repo_type() {
@@ -54,15 +58,31 @@ get_repo_type() {
     esac
 }
 
+
 process_installed_pkgs() {
     local pkg=$1
     local current_version="${pkg_versions[$pkg]}"
     local repo_type=$(get_repo_type "$pkg")
     local remote_version=$(pacman -Si "$pkg" 2>/dev/null | grep "^Version" | cut -d: -f2- | tr -d ' ')
+    local description=$(pacman -Qi "$pkg" 2>/dev/null | grep "^Description" | cut -d: -f2- | sed 's/^ //')
     
     {
         flock -x 200
         printf "%b" "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}\n"
+        
+        # Add description with search term highlighting if -d flag is used
+        if [ -n "$description" ]; then
+            if [ "$search_desc" = true ]; then
+                local highlighted_desc="$description"
+                for term in "${search_terms[@]}"; do
+                    highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
+                done
+                printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+            else
+                printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+            fi
+        fi
+        
         printf "%b" "${COL_BLUE}└─ Source: Official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}\n"
         
         if [[ -z "$remote_version" ]]; then
@@ -77,6 +97,7 @@ process_installed_pkgs() {
         printf "\n"
     } 200>/tmp/pacheck.lock
 }
+
 
 # generate a hash for repos color based on it's name. If its unique...
 get_hash_color() {
@@ -414,15 +435,7 @@ fi
             done
         fi
 
-        # Remove duplicates while preserving order
-        aur_pkgs=$(echo "$aur_pkgs" | awk '!seen[$0]++')
-        
-        # Extract package names for bulk version fetching
-        aur_names=$(echo "$aur_pkgs" | cut -d' ' -f1 | tr '\n' ' ')
-        
-        # Fetch all AUR versions in one go
-        fetch_aur_versions "$aur_names"
-
+        # Process AUR installed packages
         while IFS= read -r line; do
             local pkg=$(echo "$line" | cut -d' ' -f1)
             if [[ -n "$pkg" ]]; then
@@ -431,28 +444,43 @@ fi
                     echo -e "${COL_BOLD_YELLOW}AUR Installed:${COL_RESET}"
                     found_aur=true
                 fi
+                
                 installed_count=$((installed_count + 1))
                 found_packages[$pkg]=1
                 local current_version="${pkg_versions[$pkg]}"
                 local remote_version="${aur_remote_versions[$pkg]}"
+                local description=$(yay -Qi "$pkg" 2>/dev/null | grep "^Description" | cut -d: -f2- | sed 's/^ //')
 
-                # dev package? (-git, -svn, etc.)
+                # dev package check
                 if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
                     local pkg_type="${COL_CYAN}devel${COL_RESET}"
                 else
                     local pkg_type="${COL_YELLOW}aur${COL_RESET}"
                 fi
 
-                # colored version strings
-                local colored_current=$(compare_versions "$current_version" "$remote_version")
-                local colored_remote=$(compare_versions "$remote_version" "$current_version")
-
                 echo -e "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}"
+                
+                # Add description handling
+                if [ -n "$description" ]; then
+                    if [ "$search_desc" = true ]; then
+                        local highlighted_desc="$description"
+                        for term in "${search_terms[@]}"; do
+                            highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
+                        done
+                        printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+                    else
+                        printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+                    fi
+                fi
+
                 echo -e "${COL_YELLOW}└─ Source: AUR [${COL_RESET}${pkg_type}${COL_YELLOW}]${COL_RESET}"
+                
                 if [[ -z "$remote_version" ]]; then
                     echo -e "${COL_YELLOW}   $WARNING Unable to fetch remote version${COL_RESET}"
                 elif [[ "$current_version" != "$remote_version" ]]; then
-                    echo -e "   ${COL_YELLOW}$UP_ARROW${COL_RESET} Update available: v$colored_current -> v$colored_remote"
+                    local colored_current=$(compare_versions "$current_version" "$remote_version")
+                    local colored_remote=$(compare_versions "$remote_version" "$current_version")
+                    echo -e "   ${COL_YELLOW}$UP_ARROW Update available: ${COL_RESET}v$colored_current -> v$colored_remote"
                 else
                     echo -e "${COL_GREEN}   $CHECK_MARK Up to date${COL_RESET}"
                 fi
@@ -498,7 +526,20 @@ fi
                     remote_count=$((remote_count + 1))
                     found_packages[$pkg]=1
                     local repo_type=$(get_repo_type "$pkg")
+                    local description=$(pacman -Si "$pkg" 2>/dev/null | grep "^Description" | cut -d: -f2- | sed 's/^ //')
+
                     echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$vers)${COL_RESET}"
+                    if [ -n "$description" ]; then
+                        if [ "$search_desc" = true ]; then
+                            local highlighted_desc="$description"
+                            for term in "${search_terms[@]}"; do
+                                highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
+                            done
+                            printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+                        else
+                            printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+                        fi
+                    fi
                     echo -e "${COL_BLUE}└─ Available in official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}"
                     echo
                 fi
@@ -508,55 +549,85 @@ fi
 
         # print aur remote if not excluded
         if [ "$exclude_aur" = false ]; then
-            {
-                if [ "$exact_match" = true ]; then
-                    for term in "${search_terms[@]}"; do
-                        yay -Ss "^$term$" 2>/dev/null | grep -E "^aur/" | cut -d'/' -f2- | grep -Ev "^[[:space:]]" | while read -r line; do
-                            pkg=$(echo "$line" | cut -d' ' -f1)
-                            version=$(echo "$line" | cut -d' ' -f2)
-                            echo "aur/$pkg $version"
-                        done
-                    done
-                elif [ "$search_desc" = true ]; then
-                    for term in "${search_terms[@]}"; do
-                        yay -Ssa "$term" 2>/dev/null
-                    done
-                else
-                    for term in "${search_terms[@]}"; do
-                        yay -Ss "$term" 2>/dev/null | grep -E "^aur/" | grep -i "$term" | while read -r line; do
-                        pkg=$(echo "$line" | cut -d'/' -f2 | cut -d' ' -f1)
-                            version=$(echo "$line" | cut -d' ' -f2)
-                            echo "aur/$pkg $version"
-                        done
-                    done
-                fi | while IFS= read -r line; do
+        {
+            if [ "$exact_match" = true ]; then
+            for term in "${search_terms[@]}"; do
+                while IFS= read -r line; do
                     if [[ $line =~ ^aur/ ]]; then
-                        local pkg=$(echo "$line" | cut -d'/' -f2 | cut -d' ' -f1)
-                        local version=$(echo "$line" | cut -d' ' -f2)
-                        if [[ -n "$pkg" ]] && [[ -z "${found_packages[$pkg]}" ]]; then
-                            if [[ "$found_remote_aur" == false ]]; then
-                                echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
-                                echo -e "${COL_BOLD_YELLOW}AUR Available:${COL_RESET}"
-                                found_remote_aur=true
-                            fi
-                            remote_count=$((remote_count + 1))
-                            found_packages[$pkg]=1
-                            
-                            # check if dev package (-git, -svn, etc.)
-                            if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
-                                local pkg_type="${COL_CYAN}devel${COL_RESET}"
-                            else
-                                local pkg_type="${COL_YELLOW}aur${COL_RESET}"
-                            fi
-
-                            echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
-                            echo -e "${COL_YELLOW}└─ Available in AUR [${COL_RESET}${pkg_type}${COL_YELLOW}]${COL_RESET}"
-                            echo
-                        fi
+                        pkg=$(echo "$line" | cut -d'/' -f2 | cut -d' ' -f1)
+                        version=$(echo "$line" | cut -d' ' -f2)
+                        read -r desc_line
+                        description=$(echo "$desc_line" | sed 's/^[[:space:]]*//;s/^://')
+                        echo "aur/$pkg|$version|$description"
                     fi
-                done
-            } &
-        fi
+                done < <(yay -Sl 2>/dev/null | grep -i "^aur ${term}$")
+            done
+        elif [ "$search_desc" = true ]; then
+            for term in "${search_terms[@]}"; do
+                while IFS= read -r line; do
+                    if [[ $line =~ ^aur/ ]]; then
+                        pkg=$(echo "$line" | cut -d'/' -f2 | cut -d' ' -f1)
+                        version=$(echo "$line" | cut -d' ' -f2)
+                        read -r desc_line
+                        description=$(echo "$desc_line" | sed 's/^[[:space:]]*//;s/^://')
+                        echo "aur/$pkg|$version|$description"
+                    fi
+                done < <(yay -Ss "$term" 2>/dev/null | grep -E "^aur/|^    ")
+            done
+        else
+            for term in "${search_terms[@]}"; do
+                while IFS= read -r line; do
+                    if [[ $line =~ ^aur/ ]]; then
+                        pkg=$(echo "$line" | cut -d'/' -f2 | cut -d' ' -f1)
+                        version=$(echo "$line" | cut -d' ' -f2)
+                        read -r desc_line
+                        description=$(echo "$desc_line" | sed 's/^[[:space:]]*//;s/^://')
+                        echo "aur/$pkg|$version|$description"
+                    fi
+                done < <(yay -Sl 2>/dev/null | grep -i "$term")
+            done
+    
+            fi | while IFS= read -r line; do
+                if [[ $line =~ ^aur/ ]]; then
+                    local pkg=$(echo "$line" | cut -d'|' -f1 | cut -d'/' -f2)
+                    local version=$(echo "$line" | cut -d'|' -f2)
+                    local description=$(echo "$line" | cut -d'|' -f3)
+                    
+                    if [[ -n "$pkg" ]] && [[ -z "${found_packages[$pkg]}" ]]; then
+                        if [[ "$found_remote_aur" == false ]]; then
+                            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+                            echo -e "${COL_BOLD_YELLOW}AUR Available:${COL_RESET}"
+                            found_remote_aur=true
+                        fi
+                        remote_count=$((remote_count + 1))
+                        found_packages[$pkg]=1
+                        
+                        if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
+                            local pkg_type="${COL_CYAN}devel${COL_RESET}"
+                        else
+                            local pkg_type="${COL_YELLOW}aur${COL_RESET}"
+                        fi
+
+                        # Display package info
+                        echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
+                        if [ -n "$description" ]; then
+                            if [ "$search_desc" = true ]; then
+                                local highlighted_desc="$description"
+                                for term in "${search_terms[@]}"; do
+                                    highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
+                                done
+                                printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+                            else
+                                printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+                            fi
+                        fi
+                        echo -e "${COL_YELLOW}└─ Available in AUR [${COL_RESET}${pkg_type}${COL_YELLOW}]${COL_RESET}"
+                        echo
+                    fi
+                fi
+            done
+        } &
+    fi
 
         # wait for background processes
         wait
