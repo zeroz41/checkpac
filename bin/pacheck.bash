@@ -115,7 +115,7 @@ cache_package_data() {
 
     # Debug: Show what expac is returning
     #echo "DEBUG: First few lines of expac output:"
-    expac -S '%n\t%v\t%r\t%d' | head -n 3 >&2
+    #expac -S '%n\t%v\t%r\t%d' | head -n 3 >&2
 
     # Cache official repo data using expac
     declare -gA official_versions
@@ -718,7 +718,7 @@ main() {
     rm -f /tmp/pacheck.lock
     
     # check for yay
-    if ! pacman -Qi yay &>/dev/null; then
+    if ! expac -Q '%n' yay &>/dev/null; then
         echo -e "\e[33mWarning: 'yay' is not installed. AUR functionality will be disabled.\e[0m"
         # If no yay, turn on exclude aur flag if not already present
         if [[ ! " $@ " =~ " --exclude-aur " ]]; then
