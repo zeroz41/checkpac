@@ -131,11 +131,10 @@ compare_versions() {
     local current=$1
     local remote=$2
     
-    # remove epoch and release suffix
+    # Remove epoch and release suffix
     current=$(echo "$current" | sed 's/^[0-9]*://' | sed 's/-[^-]*$//')
     remote=$(echo "$remote" | sed 's/^[0-9]*://' | sed 's/-[^-]*$//')
     
-    # split
     IFS='.' read -ra current_parts <<< "$current"
     IFS='.' read -ra remote_parts <<< "$remote"
     
@@ -147,29 +146,31 @@ compare_versions() {
         local curr_part=${current_parts[$i]:-0}
         local rem_part=${remote_parts[$i]:-0}
         
-        # dont use for compare
-        local curr_num=$(echo "$curr_part" | sed 's/[^0-9].*//')
-        local rem_num=$(echo "$rem_part" | sed 's/[^0-9].*//')
+        # Handle non-numeric version components
+        curr_part=${curr_part//[^0-9]/}
+        rem_part=${rem_part//[^0-9]/}
+        
+        # Default to 0 if empty after stripping
+        curr_part=${curr_part:-0}
+        rem_part=${rem_part:-0}
         
         if [ "$different" = true ]; then
-            output+="${COL_RED}${curr_part}${COL_RESET}"
-        elif [ "$curr_num" -lt "$rem_num" ]; then
-            output+="${COL_RED}${curr_part}${COL_RESET}"
+            output+="${COL_RED}${current_parts[$i]:-0}${COL_RESET}"
+        elif [ "$curr_part" -lt "$rem_part" ]; then
+            output+="${COL_RED}${current_parts[$i]:-0}${COL_RESET}"
             different=true
-        elif [ "$curr_num" -gt "$rem_num" ]; then
-            output+="${COL_GREEN}${curr_part}${COL_RESET}"
+        elif [ "$curr_part" -gt "$rem_part" ]; then
+            output+="${COL_GREEN}${current_parts[$i]:-0}${COL_RESET}"
             different=true
         else
-            output+="$curr_part"
+            output+="${current_parts[$i]:-0}"
         fi
         
-        # Add separator if not last part
         if [ $i -lt $(( max_parts - 1 )) ]; then
             output+="."
         fi
     done
 
-    # Add back release suffix if present
     if [[ $1 =~ -[0-9]+ ]]; then
         local suffix=$(echo "$1" | grep -o -- '-[0-9]\+')
         if [[ $different == true ]]; then
