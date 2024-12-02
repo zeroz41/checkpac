@@ -23,7 +23,8 @@ COL_BOLD_BLUE="\e[1;34m"
 # Function to get package repo type and color
 get_repo_type() {
     local pkg=$1
-    local repo_info=$(pacman -Syi "$pkg" 2>/dev/null | grep "Repository" | awk '{print $3}')
+    # Use pacman -Q to get repository info from local database instead of -Si
+    local repo_info=$(pacman -Qi "$pkg" 2>/dev/null | grep "Repository" | awk '{print $3}')
     
     case "$repo_info" in
         "core") echo -e "${COL_RED}core${COL_RESET}";;
@@ -35,8 +36,8 @@ get_repo_type() {
         "extra-testing") echo -e "\e[38;2;138;43;226mextra-testing${COL_RESET}";; # blueviolet
         "multilib-testing") echo -e "\e[38;2;219;112;147mmultilib-testing${COL_RESET}";; # palevioletred
         "")
-            # Try to get repo from pacman -Sl for installed packages
-            local repo=$(pacman -Sl | grep " $pkg " | cut -d' ' -f1 | head -n1)
+            # Use cached package list instead of pacman -Sl
+            local repo=$(echo "$official_info" | grep " $pkg " | cut -d' ' -f1 | head -n1)
             if [ -n "$repo" ]; then
                 # Use hash-based color for unknown repos
                 local color=$(get_hash_color "$repo")
@@ -51,6 +52,32 @@ get_repo_type() {
             echo -e "${color}${repo_info}${COL_RESET}"
             ;;
     esac
+}
+
+BATCH_SIZE=30 # Number of packages to process simultaneously 
+
+process_installed_pkgs() {
+    local pkg=$1
+    local output_file=$2
+    local current_version="${pkg_versions[$pkg]}"
+    local repo_type=$(get_repo_type "$pkg")
+    local remote_version=$(pacman -Si "$pkg" 2>/dev/null | grep "^Version" | cut -d: -f2- | tr -d ' ')
+    
+    {
+        echo -e "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}"
+        echo -e "${COL_BLUE}└─ Source: Official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}"
+        
+        if [[ -z "$remote_version" ]]; then
+            echo -e "${COL_YELLOW}   $WARNING Unable to fetch remote version${COL_RESET}"
+        elif [[ "$current_version" != "$remote_version" ]]; then
+            local colored_current=$(compare_versions "$current_version" "$remote_version")
+            local colored_remote=$(compare_versions "$remote_version" "$current_version")
+            echo -e "   ${COL_YELLOW}$UP_ARROW Update available: ${COL_RESET}v$colored_current -> v$colored_remote"
+        else
+            echo -e "${COL_GREEN}   $CHECK_MARK Up to date${COL_RESET}"
+        fi
+        echo
+    } > "$output_file"
 }
 
 # generate a hash for repos color based on it's name. If its unique...
@@ -319,6 +346,7 @@ pkgcheck() {
         local installed_pkgs=""
         if [ "$exact_match" = true ]; then
             for term in "${search_terms[@]}"; do
+                # Use grep on cached package info instead of querying pacman
                 if [ -n "$installed_pkgs" ]; then
                     installed_pkgs="$installed_pkgs"$'\n'"$(echo "$all_installed_info" | grep -i "^${term} ")"
                 else
@@ -326,14 +354,17 @@ pkgcheck() {
                 fi
             done
         elif [ "$search_desc" = true ] && command -v expac >/dev/null 2>&1; then
+            # Use parallel processing for expac queries
             for term in "${search_terms[@]}"; do
                 if [ -n "$installed_pkgs" ]; then
-                    installed_pkgs="$installed_pkgs"$'\n'"$(expac '%n %d' | grep -i "$term")"
+                    installed_pkgs="$installed_pkgs"$'\n'"$(expac '%n %d' | grep -i "$term" &)"
                 else
-                    installed_pkgs="$(expac '%n %d' | grep -i "$term")"
+                    installed_pkgs="$(expac '%n %d' | grep -i "$term" &)"
                 fi
             done
+            wait
         else
+            # Use grep on cached package info
             for term in "${search_terms[@]}"; do
                 if [ -n "$installed_pkgs" ]; then
                     installed_pkgs="$installed_pkgs"$'\n'"$(echo "$all_installed_info" | grep -i "$term")"
@@ -346,37 +377,33 @@ pkgcheck() {
         # remove duplicates while preserving order
         installed_pkgs=$(echo "$installed_pkgs" | awk '!seen[$0]++')
 
+        # Process packages in batches of 10
         while IFS= read -r line; do
             local pkg=$(echo "$line" | cut -d' ' -f1)
-            # Skip AUR and empty lines
             if [[ -n "$pkg" ]] && ! echo "$aur_cache" | grep -q "^${pkg} "; then
                 installed_count=$((installed_count + 1))
                 found_packages[$pkg]=1
-                local current_version="${pkg_versions[$pkg]}"
-                local remote_version="${remote_versions[$pkg]}"
-                local repo_type=$(get_repo_type "$pkg")
-
-                #GET REMOTES
-                local remote_version=$(pacman -Syi "$pkg" 2>/dev/null | grep "^Version" | cut -d: -f2- | tr -d ' ')
-                if [[ -z "$remote_version" ]]; then
-                    # Fallback to local db version if remote check fails
-                    remote_version=$(pacman -Si "$pkg" 2>/dev/null | grep "^Version" | cut -d: -f2- | tr -d ' ')
-                fi
-
-                echo -e "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}"
-                echo -e "${COL_BLUE}└─ Source: Official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}"
-                if [[ -z "$remote_version" ]]; then
-                    echo -e "${COL_YELLOW}   $WARNING Unable to fetch remote version${COL_RESET}"
-                elif [[ "$current_version" != "$remote_version" ]]; then
-                    local colored_current=$(compare_versions "$current_version" "$remote_version")
-                    local colored_remote=$(compare_versions "$remote_version" "$current_version")
-                    echo -e "   ${COL_YELLOW}$UP_ARROW Update available: ${COL_RESET}v$colored_current -> v$colored_remote"
-                else
-                    echo -e "${COL_GREEN}   $CHECK_MARK Up to date${COL_RESET}"
-                fi
-                echo
+                local tmp_file=$(mktemp)
+                process_installed_pkgs "$pkg" "$tmp_file" &
+                tmp_files+=("$tmp_file")
+            fi
+            ((batch_count++))
+            if ((batch_count % BATCH_SIZE == 0)); then
+                wait
+                for tmp_file in "${tmp_files[@]}"; do
+                    cat "$tmp_file"
+                    rm "$tmp_file"
+                done
+                tmp_files=()
             fi
         done <<< "$installed_pkgs"
+
+        # Print remaining files
+        wait
+        for tmp_file in "${tmp_files[@]}"; do
+            cat "$tmp_file"
+            rm "$tmp_file"
+        done
 
         if [ $installed_count -eq 0 ]; then
             echo -e "${COL_RED}$X_MARK No installed packages found${COL_RESET}\n"
