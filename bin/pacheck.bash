@@ -146,6 +146,17 @@ get_repo_type() {
     esac
 }
 
+fetch_aur_versions() {
+    local pkgs="$1"
+    # Only fetch if we have packages to check and AUR isn't excluded
+    if [ -n "$pkgs" ] && [ "$exclude_aur" = false ]; then
+        while read -r pkg version; do
+            aur_remote_versions[$pkg]=$version
+        done < <(echo "$pkgs" | tr ' ' '\n' | xargs -r yay -Si 2>/dev/null | \
+                awk '/^Name/ { name=$3 } /^Version/ { print name " " $3 }')
+    fi
+}
+
 # semantic versioning comparison for color coding
 compare_versions() {
     local current=$1
@@ -336,17 +347,6 @@ pkgcheck() {
     declare -A remote_versions
     declare -A aur_remote_versions
 
-    fetch_aur_versions() {
-        local pkgs="$1"
-        # Only fetch if we have packages to check and AUR isn't excluded
-        if [ -n "$pkgs" ] && [ "$exclude_aur" = false ]; then
-            while read -r pkg version; do
-                aur_remote_versions[$pkg]=$version
-            done < <(echo "$pkgs" | tr ' ' '\n' | xargs -r yay -Si 2>/dev/null | \
-                    awk '/^Name/ { name=$3 } /^Version/ { print name " " $3 }')
-        fi
-    }
-
     # caching
     local all_installed_info=$(pacman -Q)
     local aur_cache=$(pacman -Qm)
@@ -381,7 +381,7 @@ pkgcheck() {
             fi
         done
     fi
-
+    
     # Process installed packages
     while IFS= read -r line; do
         local pkg=$(echo "$line" | cut -d' ' -f1)
@@ -434,7 +434,12 @@ fi
                 fi
             done
         fi
+        
 
+        aur_names=$(echo "$aur_pkgs" | cut -d' ' -f1 | tr '\n' ' ')
+
+        # Fetch all AUR versions in one go
+        fetch_aur_versions "$aur_names"
         # Process AUR installed packages
         while IFS= read -r line; do
             local pkg=$(echo "$line" | cut -d' ' -f1)
