@@ -8,11 +8,11 @@
 #yay
 
 # Add process group management
-set -m  # Enable job control
+set -m # Enable job control
 
 # Process management
 declare -a CHILD_PIDS
-MAX_CONCURRENT_PROCESSES=4  # Limit concurrent processes
+MAX_CONCURRENT_PROCESSES=4 # Limit concurrent processes
 CLEANUP_IN_PROGRESS=0
 
 # Trap function to handle Ctrl+C and cleanup
@@ -27,9 +27,9 @@ cleanup() {
     if [ $$ = $PPID ]; then
         echo -e "\n${COL_YELLOW}Cancelling search...${COL_RESET}"
     fi
-    
+
     trap - SIGINT SIGTERM EXIT
-    
+
     # kill children
     if [ ${#CHILD_PIDS[@]} -gt 0 ]; then
         for pid in "${CHILD_PIDS[@]}"; do
@@ -41,9 +41,9 @@ cleanup() {
 
     # kill any leftover
     pkill -P $$ 2>/dev/null || true
-    
+
     rm -f /tmp/pacheck.lock
-    
+
     exit 0
 }
 
@@ -78,28 +78,28 @@ COL_BOLD_BLUE="\e[1;34m"
 COL_DIM="\e[2m"
 COL_BG_YELLOW="\e[43m"
 COL_BLACK="\e[30m"
-COL_HIGHLIGHT="\e[94m"  # light blue
+COL_HIGHLIGHT="\e[94m" # light blue
 COL_LIGHT_MAGENTA="\e[95m"
 
 # Function to get package repo type and color
 get_repo_type() {
     local pkg=$1
-    local repo=$2 
-    
+    local repo=$2
+
     case "$repo" in
-        "core") echo -e "${COL_RED}core${COL_RESET}";;
-        "extra") echo -e "${COL_GREEN}extra${COL_RESET}";;
-        "community") echo -e "${COL_MAGENTA}community${COL_RESET}";;
-        "multilib") echo -e "${COL_CYAN}multilib${COL_RESET}";;
-        "testing") echo -e "${COL_YELLOW}testing${COL_RESET}";;
-        "community-testing") echo -e "\e[38;2;255;165;0mcommunity-testing${COL_RESET}";; # orange
-        "extra-testing") echo -e "\e[38;2;138;43;226mextra-testing${COL_RESET}";; # blueviolet
-        "multilib-testing") echo -e "\e[38;2;219;112;147mmultilib-testing${COL_RESET}";; # palevioletred
-        *)
-            # Use hash-based color for unknown repos. generate
-            local color=$(get_hash_color "$repo")
-            echo -e "${color}${repo}${COL_RESET}"
-            ;;
+    "core") echo -e "${COL_RED}core${COL_RESET}" ;;
+    "extra") echo -e "${COL_GREEN}extra${COL_RESET}" ;;
+    "community") echo -e "${COL_MAGENTA}community${COL_RESET}" ;;
+    "multilib") echo -e "${COL_CYAN}multilib${COL_RESET}" ;;
+    "testing") echo -e "${COL_YELLOW}testing${COL_RESET}" ;;
+    "community-testing") echo -e "\e[38;2;255;165;0mcommunity-testing${COL_RESET}" ;; # orange
+    "extra-testing") echo -e "\e[38;2;138;43;226mextra-testing${COL_RESET}" ;;        # blueviolet
+    "multilib-testing") echo -e "\e[38;2;219;112;147mmultilib-testing${COL_RESET}" ;; # palevioletred
+    *)
+        # Use hash-based color for unknown repos. generate
+        local color=$(get_hash_color "$repo")
+        echo -e "${color}${repo}${COL_RESET}"
+        ;;
     esac
 }
 
@@ -119,16 +119,16 @@ cache_package_data() {
     declare -gA official_versions
     declare -gA official_repos
     declare -gA official_descriptions
-    
+
     while IFS=$'\t' read -r name version repo description; do
         # Debug: Show what we're parsing for a few packages
         #[[ $name == lib32-* ]] && echo "DEBUG: Parsing $name | $version | $repo" >&2
-        
+
         official_versions[$name]=$version
         official_repos[$name]=$repo
         official_descriptions[$name]=$description
     done < <(expac -S '%n\t%v\t%r\t%d')
-    
+
     # debug only echos
     #echo "DEBUG: Cached data for lib32-libtheora:"
     #echo "Version: ${official_versions[lib32-libtheora]}"
@@ -143,17 +143,17 @@ process_installed_pkgs() {
     local repo="${official_repos[$pkg]}"
     local description="${official_descriptions[$pkg]}"
     local repo_type=$(get_repo_type "$pkg" "$repo")
-    
+
     # Early exit if cleanup is in progress
     if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
         return 1
     fi
-    
+
     {
         flock -x 200
         if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
             printf "%b" "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}\n"
-            
+
             if [ -n "$description" ]; then
                 if [ "$search_desc" = true ]; then
                     local highlighted_desc="$description"
@@ -165,9 +165,9 @@ process_installed_pkgs() {
                     printf "%b" "${COL_DIM}$description${COL_RESET}\n"
                 fi
             fi
-            
+
             printf "%b" "${COL_BLUE}└─ Source: Official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}\n"
-            
+
             if [[ -z "$remote_version" ]]; then
                 printf "%b" "${COL_YELLOW}   $WARNING Unable to fetch remote version${COL_RESET}\n"
             elif [[ "$current_version" != "$remote_version" ]]; then
@@ -180,18 +180,18 @@ process_installed_pkgs() {
             printf "\n"
         fi
     } 200>/tmp/pacheck.lock &
-    
+
     local display_pid=$!
     CHILD_PIDS+=($display_pid)
-    
+
     # Wait for this display to complete before moving to next
     wait $display_pid 2>/dev/null || true
-    
+
     # Check if cleanup was triggered during processing
     if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
         return 1
     fi
-    
+
     return 0
 }
 
@@ -226,21 +226,20 @@ process_remote_pkg() {
             printf "%b" "${COL_BLUE}└─ Available in official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}\n\n"
         fi
     } 200>/tmp/pacheck.lock &
-    
+
     local display_pid=$!
     CHILD_PIDS+=($display_pid)
-    
+
     # Wait for this display to complete
     wait $display_pid 2>/dev/null || true
-    
+
     # Check if cleanup was triggered during processing
     if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
         return 1
     fi
-    
+
     return 0
 }
-
 
 # generate a hash for repos color based on it's name. If its unique...
 get_hash_color() {
@@ -250,9 +249,9 @@ get_hash_color() {
     local g=$((0x${hash:2:2}))
     local b=$((0x${hash:4:2}))
     # Ensure minimum brightness for readability
-    r=$(( (r + 128) % 256 ))
-    g=$(( (g + 128) % 256 ))
-    b=$(( (b + 128) % 256 ))
+    r=$(((r + 128) % 256))
+    g=$(((g + 128) % 256))
+    b=$(((b + 128) % 256))
     echo "\e[38;2;${r};${g};${b}m"
 }
 
@@ -262,8 +261,8 @@ fetch_aur_versions() {
     if [ -n "$pkgs" ] && [ "$exclude_aur" = false ]; then
         while read -r pkg version; do
             aur_remote_versions[$pkg]=$version
-        done < <(yay -Si $(echo "$pkgs") 2>/dev/null | \
-                awk 'BEGIN{OFS=" "} 
+        done < <(yay -Si $(echo "$pkgs") 2>/dev/null |
+            awk 'BEGIN{OFS=" "} 
                      /^Name/ {name=$3} 
                      /^Version/ {print name, $3}')
     fi
@@ -275,8 +274,8 @@ cache_aur_descriptions() {
     if [ -n "$pkgs" ]; then
         while read -r pkg desc; do
             aur_descriptions[$pkg]="$desc"
-        done < <(yay -Qi $(echo "$pkgs") 2>/dev/null | \
-                awk -F': ' '/^Name/ {name=$2} /^Description/ {print name, $2}')
+        done < <(yay -Qi $(echo "$pkgs") 2>/dev/null |
+            awk -F': ' '/^Name/ {name=$2} /^Description/ {print name, $2}')
     fi
 }
 
@@ -291,7 +290,7 @@ yay_search() {
 
     # Wait for yay with timeout
     wait $yay_pid 2>/dev/null || true
-    
+
     # If cleanup triggered, kill the process group
     if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
         kill -- -$yay_pid 2>/dev/null || true
@@ -299,35 +298,34 @@ yay_search() {
     fi
 }
 
-
 # semantic versioning comparison for color coding
 compare_versions() {
     local current=$1
     local remote=$2
-    
+
     # Remove epoch and release suffix
     current=$(echo "$current" | sed 's/^[0-9]*://' | sed 's/-[^-]*$//')
     remote=$(echo "$remote" | sed 's/^[0-9]*://' | sed 's/-[^-]*$//')
-    
-    IFS='.' read -ra current_parts <<< "$current"
-    IFS='.' read -ra remote_parts <<< "$remote"
-    
+
+    IFS='.' read -ra current_parts <<<"$current"
+    IFS='.' read -ra remote_parts <<<"$remote"
+
     local output=""
     local different=false
-    local max_parts=$(( ${#current_parts[@]} > ${#remote_parts[@]} ? ${#current_parts[@]} : ${#remote_parts[@]} ))
-    
-    for (( i=0; i<max_parts; i++ )); do
+    local max_parts=$((${#current_parts[@]} > ${#remote_parts[@]} ? ${#current_parts[@]} : ${#remote_parts[@]}))
+
+    for ((i = 0; i < max_parts; i++)); do
         local curr_part=${current_parts[$i]:-0}
         local rem_part=${remote_parts[$i]:-0}
-        
+
         # Handle non-numeric version components
         curr_part=${curr_part//[^0-9]/}
         rem_part=${rem_part//[^0-9]/}
-        
+
         # Default to 0 if empty after stripping
         curr_part=${curr_part:-0}
         rem_part=${rem_part:-0}
-        
+
         if [ "$different" = true ]; then
             output+="${COL_RED}${current_parts[$i]:-0}${COL_RESET}"
         elif [ "$curr_part" -lt "$rem_part" ]; then
@@ -339,8 +337,8 @@ compare_versions() {
         else
             output+="${current_parts[$i]:-0}"
         fi
-        
-        if [ $i -lt $(( max_parts - 1 )) ]; then
+
+        if [ $i -lt $((max_parts - 1)) ]; then
             output+="."
         fi
     done
@@ -361,7 +359,7 @@ compare_versions() {
             fi
         fi
     fi
-    
+
     echo "$output"
 }
 
@@ -375,7 +373,7 @@ test_version_compare() {
     )
 
     for test in "${test_cases[@]}"; do
-        read -r v1 v2 <<< "$test"
+        read -r v1 v2 <<<"$test"
         echo -e "\nComparing $v1 -> $v2:"
         echo -e "Current: $(compare_versions "$v1" "$v2")"
         echo -e "Remote:  $(compare_versions "$v2" "$v1")"
@@ -388,7 +386,7 @@ test_version_compare() {
 
 show_help() {
     local script_name=$(basename "$0")
-    cat << EOF
+    cat <<EOF
 ${script_name} - Search and check status of Arch Linux packages
 
 Usage: ${script_name} [options] <search-terms...>
@@ -416,7 +414,7 @@ EOF
 }
 
 pkgcheck() {
-    
+
     local check_remote=false
     local search_desc=false
     local exact_match=false
@@ -432,48 +430,48 @@ pkgcheck() {
     # arg parser
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help)
-                show_help
-                return 0
-                ;;
-            -r|--remote)
+        -h | --help)
+            show_help
+            return 0
+            ;;
+        -r | --remote)
+            check_remote=true
+            shift
+            ;;
+        -d | --desc)
+            search_desc=true
+            shift
+            ;;
+        -e | --exact)
+            exact_match=true
+            search_desc=false # exact match overrides description search
+            shift
+            ;;
+        --exclude-aur)
+            exclude_aur=true
+            shift
+            ;;
+        --exclude-arch)
+            exclude_arch=true
+            shift
+            ;;
+        -*)
+            if [[ "$1" =~ r ]]; then
                 check_remote=true
-                shift
-                ;;
-            -d|--desc)
+            fi
+            if [[ "$1" =~ d ]]; then
                 search_desc=true
-                shift
-                ;;
-            -e|--exact)
+            fi
+            if [[ "$1" =~ e ]]; then
                 exact_match=true
-                search_desc=false  # exact match overrides description search
-                shift
-                ;;
-            --exclude-aur)
-                exclude_aur=true
-                shift
-                ;;
-            --exclude-arch)
-                exclude_arch=true
-                shift
-                ;;
-            -*)
-                if [[ "$1" =~ r ]]; then
-                    check_remote=true
-                fi
-                if [[ "$1" =~ d ]]; then
-                    search_desc=true
-                fi
-                if [[ "$1" =~ e ]]; then
-                    exact_match=true
-                    search_desc=false  # exact match overrides description search
-                fi
-                shift
-                ;;
-            *)
-                search_terms+=("$1")
-                shift
-                ;;
+                search_desc=false # exact match overrides description search
+            fi
+            shift
+            ;;
+        *)
+            search_terms+=("$1")
+            shift
+            ;;
         esac
     done
 
@@ -481,7 +479,7 @@ pkgcheck() {
         show_help
         return 1
     fi
-    
+
     #cache the data
     cache_package_data
 
@@ -500,155 +498,155 @@ pkgcheck() {
 
     while IFS=' ' read -r pkg version; do
         pkg_versions[$pkg]=$version
-    done <<< "$all_installed_info"
+    done <<<"$all_installed_info"
 
     # local official check
     if [ "$exclude_arch" = false ]; then
-    echo -e "${COL_BOLD_CYAN}Official Repositories Installed:${COL_RESET}"
-    echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
-    local installed_count=0
+        echo -e "${COL_BOLD_CYAN}Official Repositories Installed:${COL_RESET}"
+        echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+        local installed_count=0
 
-    # Get installed packages
-    local installed_pkgs=""
-    if [ "$exact_match" = true ]; then
-        for term in "${search_terms[@]}"; do
-            if [ -n "$installed_pkgs" ]; then
-                installed_pkgs="$installed_pkgs"$'\n'"$(pacman -Q | grep -i "^${term} ")"
-            else
-                installed_pkgs="$(pacman -Q | grep -i "^${term} ")"
-            fi
-        done
-    else
-        for term in "${search_terms[@]}"; do
-            if [ -n "$installed_pkgs" ]; then
-                installed_pkgs="$installed_pkgs"$'\n'"$(pacman -Q | grep -i "$term")"
-            else
-                installed_pkgs="$(pacman -Q | grep -i "$term")"
-            fi
-        done
-    fi
-    
-    # Process installed packages with better interrupt handling
-    while IFS= read -r line; do
-        if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-            break
+        # Get installed packages
+        local installed_pkgs=""
+        if [ "$exact_match" = true ]; then
+            for term in "${search_terms[@]}"; do
+                if [ -n "$installed_pkgs" ]; then
+                    installed_pkgs="$installed_pkgs"$'\n'"$(pacman -Q | grep -i "^${term} ")"
+                else
+                    installed_pkgs="$(pacman -Q | grep -i "^${term} ")"
+                fi
+            done
+        else
+            for term in "${search_terms[@]}"; do
+                if [ -n "$installed_pkgs" ]; then
+                    installed_pkgs="$installed_pkgs"$'\n'"$(pacman -Q | grep -i "$term")"
+                else
+                    installed_pkgs="$(pacman -Q | grep -i "$term")"
+                fi
+            done
         fi
-        
-        local pkg=$(echo "$line" | cut -d' ' -f1)
-        if [[ -n "$pkg" ]] && ! echo "$aur_cache" | grep -q "^${pkg} "; then
-            installed_count=$((installed_count + 1))
-            found_packages[$pkg]=1
-            
-            # Process package and check return status
-            if ! process_installed_pkgs "$pkg"; then
+
+        # Process installed packages with better interrupt handling
+        while IFS= read -r line; do
+            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
                 break
             fi
-        fi
-    done <<< "$installed_pkgs"
 
-    # Wait for any remaining processes
-    wait
+            local pkg=$(echo "$line" | cut -d' ' -f1)
+            if [[ -n "$pkg" ]] && ! echo "$aur_cache" | grep -q "^${pkg} "; then
+                installed_count=$((installed_count + 1))
+                found_packages[$pkg]=1
 
-    if [ $installed_count -eq 0 ]; then
-        echo -e "${COL_RED}$X_MARK No installed packages found${COL_RESET}\n"
-    fi
-fi
-
-    # AUR installed packages
-    if [ "$exclude_aur" = false ]; then
-    local found_aur=false
-    local aur_pkgs=""
-    local aur_names=""
-    
-    # More efficient grep patterns
-    if [ "$exact_match" = true ]; then
-        aur_pkgs=$(echo "$aur_cache" | grep -E "^($(echo "${search_terms[@]}" | tr ' ' '|')) ")
-    elif [ "$search_desc" = true ] && command -v expac >/dev/null 2>&1; then
-        aur_pkgs=$(expac -Q '%n %d' | grep -E "($(echo "${search_terms[@]}" | tr ' ' '|'))" | grep -F -f <(echo "$aur_cache" | cut -d' ' -f1))
-    else
-        aur_pkgs=$(echo "$aur_cache" | grep -E "($(echo "${search_terms[@]}" | tr ' ' '|'))")
-    fi
-
-    aur_names=$(echo "$aur_pkgs" | cut -d' ' -f1)
-    
-    # Only proceed if we found any AUR packages
-    if [ -n "$aur_names" ]; then
-        # Fetch versions synchronously but with interrupt check
-        if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
-            fetch_aur_versions "$aur_names"
-            cache_aur_descriptions "$aur_names"
-        fi
-        
-        # Process and display results with streaming
-        local first_result=true
-        while IFS= read -r pkg; do
-            if [[ -n "$pkg" ]] && [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
-                {
-                    flock -x 200
-                    if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
-                        if [ "$first_result" = true ]; then
-                            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
-                            echo -e "${COL_BOLD_YELLOW}AUR Installed:${COL_RESET}"
-                            first_result=false
-                            found_aur=true
-                        fi
-                        
-                        installed_count=$((installed_count + 1))
-                        found_packages[$pkg]=1
-                        local current_version="${pkg_versions[$pkg]}"
-                        local remote_version="${aur_remote_versions[$pkg]}"
-                        local description="${aur_descriptions[$pkg]}"
-
-                        if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
-                            local pkg_type="${COL_CYAN}devel${COL_RESET}"
-                        else
-                            local pkg_type="${COL_RED}aur${COL_RESET}"
-                        fi
-
-                        # Display package with version and description
-                        echo -e "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}"
-                        
-                        if [ -n "$description" ]; then
-                            if [ "$search_desc" = true ]; then
-                                local highlighted_desc="$description"
-                                for term in "${search_terms[@]}"; do
-                                    highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
-                                done
-                                printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
-                            else
-                                printf "%b" "${COL_DIM}$description${COL_RESET}\n"
-                            fi
-                        fi
-
-                        echo -e "${COL_YELLOW}└─ Source: AUR [${COL_RESET}${pkg_type}${COL_YELLOW}]${COL_RESET}"
-                        
-                        if [[ -z "$remote_version" ]]; then
-                            echo -e "${COL_YELLOW}   $WARNING Unable to fetch remote version${COL_RESET}"
-                        elif [[ "$current_version" != "$remote_version" ]]; then
-                            local colored_current=$(compare_versions "$current_version" "$remote_version")
-                            local colored_remote=$(compare_versions "$remote_version" "$current_version")
-                            echo -e "   ${COL_YELLOW}$UP_ARROW Update available: ${COL_RESET}v$colored_current -> v$colored_remote"
-                        else
-                            echo -e "${COL_GREEN}   $CHECK_MARK Up to date${COL_RESET}"
-                        fi
-                        echo
-                    fi
-                } 200>/tmp/pacheck.lock &
-                
-                local display_pid=$!
-                CHILD_PIDS+=($display_pid)
-                
-                # Wait for this display to complete before moving to next
-                wait $display_pid 2>/dev/null || true
-                
-                # Check cleanup flag after each package
-                if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+                # Process package and check return status
+                if ! process_installed_pkgs "$pkg"; then
                     break
                 fi
             fi
-        done <<< "$aur_names"
+        done <<<"$installed_pkgs"
+
+        # Wait for any remaining processes
+        wait
+
+        if [ $installed_count -eq 0 ]; then
+            echo -e "${COL_RED}$X_MARK No installed packages found${COL_RESET}\n"
+        fi
     fi
-fi
+
+    # AUR installed packages
+    if [ "$exclude_aur" = false ]; then
+        local found_aur=false
+        local aur_pkgs=""
+        local aur_names=""
+
+        # More efficient grep patterns
+        if [ "$exact_match" = true ]; then
+            aur_pkgs=$(echo "$aur_cache" | grep -E "^($(echo "${search_terms[@]}" | tr ' ' '|')) ")
+        elif [ "$search_desc" = true ] && command -v expac >/dev/null 2>&1; then
+            aur_pkgs=$(expac -Q '%n %d' | grep -E "($(echo "${search_terms[@]}" | tr ' ' '|'))" | grep -F -f <(echo "$aur_cache" | cut -d' ' -f1))
+        else
+            aur_pkgs=$(echo "$aur_cache" | grep -E "($(echo "${search_terms[@]}" | tr ' ' '|'))")
+        fi
+
+        aur_names=$(echo "$aur_pkgs" | cut -d' ' -f1)
+
+        # Only proceed if we found any AUR packages
+        if [ -n "$aur_names" ]; then
+            # Fetch versions synchronously but with interrupt check
+            if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+                fetch_aur_versions "$aur_names"
+                cache_aur_descriptions "$aur_names"
+            fi
+
+            # Process and display results with streaming
+            local first_result=true
+            while IFS= read -r pkg; do
+                if [[ -n "$pkg" ]] && [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+                    {
+                        flock -x 200
+                        if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+                            if [ "$first_result" = true ]; then
+                                echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+                                echo -e "${COL_BOLD_YELLOW}AUR Installed:${COL_RESET}"
+                                first_result=false
+                                found_aur=true
+                            fi
+
+                            installed_count=$((installed_count + 1))
+                            found_packages[$pkg]=1
+                            local current_version="${pkg_versions[$pkg]}"
+                            local remote_version="${aur_remote_versions[$pkg]}"
+                            local description="${aur_descriptions[$pkg]}"
+
+                            if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
+                                local pkg_type="${COL_CYAN}devel${COL_RESET}"
+                            else
+                                local pkg_type="${COL_RED}aur${COL_RESET}"
+                            fi
+
+                            # Display package with version and description
+                            echo -e "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}"
+
+                            if [ -n "$description" ]; then
+                                if [ "$search_desc" = true ]; then
+                                    local highlighted_desc="$description"
+                                    for term in "${search_terms[@]}"; do
+                                        highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
+                                    done
+                                    printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+                                else
+                                    printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+                                fi
+                            fi
+
+                            echo -e "${COL_YELLOW}└─ Source: AUR [${COL_RESET}${pkg_type}${COL_YELLOW}]${COL_RESET}"
+
+                            if [[ -z "$remote_version" ]]; then
+                                echo -e "${COL_YELLOW}   $WARNING Unable to fetch remote version${COL_RESET}"
+                            elif [[ "$current_version" != "$remote_version" ]]; then
+                                local colored_current=$(compare_versions "$current_version" "$remote_version")
+                                local colored_remote=$(compare_versions "$remote_version" "$current_version")
+                                echo -e "   ${COL_YELLOW}$UP_ARROW Update available: ${COL_RESET}v$colored_current -> v$colored_remote"
+                            else
+                                echo -e "${COL_GREEN}   $CHECK_MARK Up to date${COL_RESET}"
+                            fi
+                            echo
+                        fi
+                    } 200>/tmp/pacheck.lock &
+
+                    local display_pid=$!
+                    CHILD_PIDS+=($display_pid)
+
+                    # Wait for this display to complete before moving to next
+                    wait $display_pid 2>/dev/null || true
+
+                    # Check cleanup flag after each package
+                    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+                        break
+                    fi
+                fi
+            done <<<"$aur_names"
+        fi
+    fi
 
     # remote check if -r flag
     if [ "$check_remote" = true ]; then
@@ -659,7 +657,7 @@ fi
         {
             if [ "$exclude_arch" = false ]; then
                 local remote_pkgs=""
-                
+
                 if [ "$exact_match" = true ]; then
                     for term in "${search_terms[@]}"; do
                         if [ -n "$remote_pkgs" ]; then
@@ -707,8 +705,8 @@ fi
                             # Limit concurrent processes
                             manage_processes
                         fi
-                    done <<< "$remote_pkgs"
-                    
+                    done <<<"$remote_pkgs"
+
                     # Wait for remaining background processes
                     wait
                 fi
@@ -717,128 +715,128 @@ fi
 
         # print aur remote if not excluded
         if [ "$exclude_aur" = false ]; then
-    local temp_file=$(mktemp)
-    trap 'rm -f "$temp_file"' EXIT
-    
-    # Early exit if cleanup already triggered
-    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-        rm -f "$temp_file"
-        return
-    fi
-    
-    if [ "$exact_match" = true ]; then
-        for term in "${search_terms[@]}"; do
-            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-                break
-            fi
-            if ! yay_search "^${term}$" >> "$temp_file"; then
-                break
-            fi
-        done
-    elif [ "$search_desc" = true ]; then
-        for term in "${search_terms[@]}"; do
-            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-                break
-            fi
-            if ! yay_search "$term" >> "$temp_file"; then
-                break
-            fi
-        done
-    else
-        for term in "${search_terms[@]}"; do
-            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-                break
-            fi
-            if ! yay_search "$term" | grep "^aur/.*$term" >> "$temp_file"; then
-                break
-            fi
-        done
-    fi
+            local temp_file=$(mktemp)
+            trap 'rm -f "$temp_file"' EXIT
 
-    # Process results only if we haven't been interrupted
-    if [ "$CLEANUP_IN_PROGRESS" = "0" ] && [ -s "$temp_file" ]; then
-        local first_result=true
-        # Read results from temp file
-        while IFS= read -r line || [ -n "$line" ]; do
+            # Early exit if cleanup already triggered
             if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-                break
+                rm -f "$temp_file"
+                return
             fi
-            
-            if [[ $line =~ ^aur/ ]]; then
-                local pkg=$(echo "$line" | cut -d'/' -f2)
-                local version=$(echo "$pkg" | cut -d' ' -f2)
-                pkg=$(echo "$pkg" | cut -d' ' -f1)
-                local description=""
-                
-                # Read the next line for description if it exists
-                if [ "$search_desc" = true ] || [ "$exact_match" = false ]; then
-                    read -r desc_line
-                    description=$(echo "$desc_line" | sed 's/^[[:space:]]*//;s/^://')
-                fi
-                
-                if [[ -n "$pkg" ]] && [[ -z "${found_packages[$pkg]}" ]]; then
-                    if [ "$first_result" = true ]; then
-                        {
-                            flock -x 200
-                            if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
-                                echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
-                                echo -e "${COL_BOLD_YELLOW}AUR Available:${COL_RESET}"
-                            fi
-                        } 200>/tmp/pacheck.lock
-                        first_result=false
-                        found_remote_aur=true
-                    fi
-                    
-                    remote_count=$((remote_count + 1))
-                    found_packages[$pkg]=1
-                    
-                    if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
-                        local pkg_type="${COL_CYAN}devel${COL_RESET}"
-                    else
-                        local pkg_type="${COL_YELLOW}aur${COL_RESET}"
-                    fi
 
-                    # Launch display in background
-                    {
-                        flock -x 200
-                        if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
-                            echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
-                            if [ -n "$description" ]; then
-                                if [ "$search_desc" = true ]; then
-                                    local highlighted_desc="$description"
-                                    for term in "${search_terms[@]}"; do
-                                        highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
-                                    done
-                                    printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
-                                else
-                                    printf "%b" "${COL_DIM}$description${COL_RESET}\n"
-                                fi
-                            fi
-                            echo -e "${COL_YELLOW}└─ Available in AUR [${COL_RESET}${pkg_type}${COL_YELLOW}]${COL_RESET}"
-                            echo
-                        fi
-                    } 200>/tmp/pacheck.lock &
-                    
-                    local display_pid=$!
-                    CHILD_PIDS+=($display_pid)
-                    
-                    # Manage concurrent processes
-                    manage_processes
-                    
-                    # Check if cleanup was triggered
+            if [ "$exact_match" = true ]; then
+                for term in "${search_terms[@]}"; do
                     if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
                         break
                     fi
-                fi
+                    if ! yay_search "^${term}$" >>"$temp_file"; then
+                        break
+                    fi
+                done
+            elif [ "$search_desc" = true ]; then
+                for term in "${search_terms[@]}"; do
+                    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+                        break
+                    fi
+                    if ! yay_search "$term" >>"$temp_file"; then
+                        break
+                    fi
+                done
+            else
+                for term in "${search_terms[@]}"; do
+                    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+                        break
+                    fi
+                    if ! yay_search "$term" | grep "^aur/.*$term" >>"$temp_file"; then
+                        break
+                    fi
+                done
             fi
-        done < "$temp_file"
-        
-        # Wait for any remaining display processes
-        wait
-    fi
-    
-    rm -f "$temp_file"
-fi
+
+            # Process results only if we haven't been interrupted
+            if [ "$CLEANUP_IN_PROGRESS" = "0" ] && [ -s "$temp_file" ]; then
+                local first_result=true
+                # Read results from temp file
+                while IFS= read -r line || [ -n "$line" ]; do
+                    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+                        break
+                    fi
+
+                    if [[ $line =~ ^aur/ ]]; then
+                        local pkg=$(echo "$line" | cut -d'/' -f2)
+                        local version=$(echo "$pkg" | cut -d' ' -f2)
+                        pkg=$(echo "$pkg" | cut -d' ' -f1)
+                        local description=""
+
+                        # Read the next line for description if it exists
+                        if [ "$search_desc" = true ] || [ "$exact_match" = false ]; then
+                            read -r desc_line
+                            description=$(echo "$desc_line" | sed 's/^[[:space:]]*//;s/^://')
+                        fi
+
+                        if [[ -n "$pkg" ]] && [[ -z "${found_packages[$pkg]}" ]]; then
+                            if [ "$first_result" = true ]; then
+                                {
+                                    flock -x 200
+                                    if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+                                        echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+                                        echo -e "${COL_BOLD_YELLOW}AUR Available:${COL_RESET}"
+                                    fi
+                                } 200>/tmp/pacheck.lock
+                                first_result=false
+                                found_remote_aur=true
+                            fi
+
+                            remote_count=$((remote_count + 1))
+                            found_packages[$pkg]=1
+
+                            if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
+                                local pkg_type="${COL_CYAN}devel${COL_RESET}"
+                            else
+                                local pkg_type="${COL_YELLOW}aur${COL_RESET}"
+                            fi
+
+                            # Launch display in background
+                            {
+                                flock -x 200
+                                if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+                                    echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
+                                    if [ -n "$description" ]; then
+                                        if [ "$search_desc" = true ]; then
+                                            local highlighted_desc="$description"
+                                            for term in "${search_terms[@]}"; do
+                                                highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
+                                            done
+                                            printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+                                        else
+                                            printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+                                        fi
+                                    fi
+                                    echo -e "${COL_YELLOW}└─ Available in AUR [${COL_RESET}${pkg_type}${COL_YELLOW}]${COL_RESET}"
+                                    echo
+                                fi
+                            } 200>/tmp/pacheck.lock &
+
+                            local display_pid=$!
+                            CHILD_PIDS+=($display_pid)
+
+                            # Manage concurrent processes
+                            manage_processes
+
+                            # Check if cleanup was triggered
+                            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+                                break
+                            fi
+                        fi
+                    fi
+                done <"$temp_file"
+
+                # Wait for any remaining display processes
+                wait
+            fi
+
+            rm -f "$temp_file"
+        fi
 
         if [ $remote_count -eq 0 ]; then
             echo -e "${COL_RED}$X_MARK No additional packages found in repositories${COL_RESET}"
@@ -850,10 +848,10 @@ main() {
     # Initialize empty CHILD_PIDS array
     CHILD_PIDS=()
     CLEANUP_IN_PROGRESS=0
-    
+
     # Remove any stale lock file
     rm -f /tmp/pacheck.lock
-    
+
     # check for yay
     if ! expac -Q '%n' yay &>/dev/null; then
         echo -e "\e[33mWarning: 'yay' is not installed. AUR functionality will be disabled.\e[0m"
@@ -867,7 +865,7 @@ main() {
         # yay is installed, run normally
         pkgcheck "$@"
     fi
-    
+
     # wait for all background processes to complete
     wait 2>/dev/null || true
 }
