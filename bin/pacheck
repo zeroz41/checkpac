@@ -259,23 +259,36 @@ fetch_aur_versions() {
     local pkgs="$1"
     # Only fetch if we have packages to check and AUR isn't excluded
     if [ -n "$pkgs" ] && [ "$exclude_aur" = false ]; then
-        while read -r pkg version; do
-            aur_remote_versions[$pkg]=$version
-        done < <(yay -Si $(echo "$pkgs") 2>/dev/null |
-            awk 'BEGIN{OFS=" "} 
-                     /^Name/ {name=$3} 
-                     /^Version/ {print name, $3}')
+        # Convert space-separated packages into comma-separated for the API
+        local pkg_list=$(echo "$pkgs" | tr ' ' ',')
+        # Single request for all packages
+        curl -s "https://aur.archlinux.org/rpc/v5/info?arg[]=$(echo "$pkg_list")" | 
+            jq -r '.results[] | select(.Version != null) | "\(.Name) \(.Version)"' |
+            while read -r pkg version; do
+                aur_remote_versions[$pkg]=$version
+            done
     fi
 }
 
-declare -A aur_descriptions
 cache_aur_descriptions() {
     local pkgs="$1"
     if [ -n "$pkgs" ]; then
+        # For installed packages, use expac
         while read -r pkg desc; do
-            aur_descriptions[$pkg]="$desc"
-        done < <(yay -Qi $(echo "$pkgs") 2>/dev/null |
-            awk -F': ' '/^Name/ {name=$2} /^Description/ {print name, $2}')
+            if [ -n "$pkg" ] && [ -n "$desc" ]; then
+                aur_descriptions[$pkg]="$desc"
+            fi
+        done < <(expac -Q '%n %d' $pkgs 2>/dev/null)
+        
+        # For non-installed packages, use single AUR RPC request
+        local pkg_list=$(echo "$pkgs" | tr ' ' ',')
+        curl -s "https://aur.archlinux.org/rpc/v5/info?arg[]=$(echo "$pkg_list")" |
+            jq -r '.results[] | select(.Description != null) | "\(.Name) \(.Description)"' |
+            while read -r pkg desc; do
+                if [ -z "${aur_descriptions[$pkg]}" ]; then
+                    aur_descriptions[$pkg]="$desc"
+                fi
+            done
     fi
 }
 
