@@ -639,58 +639,90 @@ fi
         # print aur remote if not excluded
         if [ "$exclude_aur" = false ]; then
             {
-                local aur_output=""
-                if [ "$exact_match" = true ]; then
-                    for term in "${search_terms[@]}"; do
-                        aur_output+=$(yay -Ss "^${term}$" 2>/dev/null | grep -E "^aur/")$'\n'
-                    done
-                elif [ "$search_desc" = true ]; then
-                    for term in "${search_terms[@]}"; do
-                        aur_output+=$(yay -Ss "$term" 2>/dev/null | grep -E "^aur/|^    ")$'\n'
-                    done
-                else
-                    # without -d flag, only search package names
-                    for term in "${search_terms[@]}"; do
-                        aur_output+=$(yay -Ss "$term" 2>/dev/null | grep "^aur/" | grep -i "$term")$'\n'
-                    done
-                fi
-
-                echo "$aur_output" | while IFS= read -r line; do
-                    if [[ $line =~ ^aur/ ]]; then
-                        pkg=$(echo "$line" | cut -d'/' -f2)
-                        version=$(echo "$pkg" | cut -d' ' -f2)
-                        pkg=$(echo "$pkg" | cut -d' ' -f1)
-                        description=""
-                        if [ "$search_desc" = true ]; then
-                            read -r desc_line
-                            description=$(echo "$desc_line" | sed 's/^[[:space:]]*//;s/^://')
-                        fi
-                        
-                        if [[ -n "$pkg" ]] && [[ -z "${found_packages[$pkg]}" ]]; then
-                            if [[ "$found_remote_aur" == false ]]; then
-                                echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
-                                echo -e "${COL_BOLD_YELLOW}AUR Available:${COL_RESET}"
-                                found_remote_aur=true
-                            fi
-                            remote_count=$((remote_count + 1))
-                            found_packages[$pkg]=1
-                            
-                            if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
-                                local pkg_type="${COL_CYAN}devel${COL_RESET}"
-                            else
-                                local pkg_type="${COL_YELLOW}aur${COL_RESET}"
-                            fi
-
-                            # Display package info
-                            echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
-                            if [ "$search_desc" = true ] && [ -n "$description" ]; then
-                                printf "%b" "${COL_DIM}$description${COL_RESET}\n"
-                            fi
-                            echo -e "${COL_YELLOW}└─ Available in AUR [${COL_RESET}${pkg_type}${COL_YELLOW}]${COL_RESET}"
-                            echo
-                        fi
+                # Create a temporary file for AUR search results
+                local aur_tmp_file=$(mktemp)
+                
+                # Function to handle cleanup of temp file
+                cleanup_aur_tmp() {
+                    rm -f "$aur_tmp_file"
+                }
+                
+                # cleanup temp file
+                trap cleanup_aur_tmp EXIT
+                
+                # each search term separately to allow for interruption
+                for term in "${search_terms[@]}"; do
+                    if [ "$exact_match" = true ]; then
+                        yay -Ss "^${term}$" 2>/dev/null | grep -E "^aur/" >> "$aur_tmp_file" &
+                        local yay_pid=$!
+                        CHILD_PIDS+=($yay_pid)
+                        wait $yay_pid || break
+                    elif [ "$search_desc" = true ]; then
+                        yay -Ss "$term" 2>/dev/null | grep -E "^aur/|^    " >> "$aur_tmp_file" &
+                        local yay_pid=$!
+                        CHILD_PIDS+=($yay_pid)
+                        wait $yay_pid || break
+                    else
+                        yay -Ss "$term" 2>/dev/null | grep "^aur/" | grep -i "$term" >> "$aur_tmp_file" &
+                        local yay_pid=$!
+                        CHILD_PIDS+=($yay_pid)
+                        wait $yay_pid || break
                     fi
                 done
+
+                # process results if we have any and haven't been interrupted
+                if [ -s "$aur_tmp_file" ] && [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+                    local found_remote_aur=false
+                    
+                    while IFS= read -r line; do
+                        # check for interruption
+                        if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+                            break
+                        fi
+                        
+                        if [[ $line =~ ^aur/ ]]; then
+                            pkg=$(echo "$line" | cut -d'/' -f2)
+                            version=$(echo "$pkg" | cut -d' ' -f2)
+                            pkg=$(echo "$pkg" | cut -d' ' -f1)
+                            description=""
+                            if [ "$search_desc" = true ]; then
+                                read -r desc_line
+                                description=$(echo "$desc_line" | sed 's/^[[:space:]]*//;s/^://')
+                            fi
+                            
+                            if [[ -n "$pkg" ]] && [[ -z "${found_packages[$pkg]}" ]]; then
+                                if [[ "$found_remote_aur" == false ]]; then
+                                    echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+                                    echo -e "${COL_BOLD_YELLOW}AUR Available:${COL_RESET}"
+                                    found_remote_aur=true
+                                fi
+                                remote_count=$((remote_count + 1))
+                                found_packages[$pkg]=1
+                                
+                                if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
+                                    local pkg_type="${COL_CYAN}devel${COL_RESET}"
+                                else
+                                    local pkg_type="${COL_YELLOW}aur${COL_RESET}"
+                                fi
+
+                                {
+                                    flock -x 200
+                                    # Display package info
+                                    echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
+                                    if [ "$search_desc" = true ] && [ -n "$description" ]; then
+                                        printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+                                    fi
+                                    echo -e "${COL_YELLOW}└─ Available in AUR [${COL_RESET}${pkg_type}${COL_YELLOW}]${COL_RESET}"
+                                    echo
+                                } 200>/tmp/pacheck.lock &
+                                
+                                track_child $!
+                            fi
+                        fi
+                    done < "$aur_tmp_file"
+                fi
+                
+                cleanup_aur_tmp
             } &
         fi
 
