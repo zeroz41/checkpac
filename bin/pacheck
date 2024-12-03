@@ -231,77 +231,6 @@ fetch_aur_versions() {
     fi
 }
 
-cache_aur_data() {
-    # Cache installed AUR package info
-    declare -gA aur_descriptions
-    declare -gA aur_pkg_types
-    
-    # Get all info at once to avoid multiple yay calls
-    local aur_info
-    aur_info=$(yay -Qi $(pacman -Qqm) 2>/dev/null)
-    
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^Name[[:space:]]*:[[:space:]]*(.*) ]]; then
-            current_pkg="${BASH_REMATCH[1]}"
-        elif [[ "$line" =~ ^Description[[:space:]]*:[[:space:]]*(.*) ]]; then
-            aur_descriptions[$current_pkg]="${BASH_REMATCH[1]}"
-            # Determine package type
-            if [[ "$current_pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
-                aur_pkg_types[$current_pkg]="devel"
-            else
-                aur_pkg_types[$current_pkg]="aur"
-            fi
-        fi
-    done <<< "$aur_info"
-}
-
-process_local_aur() {
-    local pkg=$1
-    local current_version="${pkg_versions[$pkg]}"
-    local remote_version="${aur_remote_versions[$pkg]}"
-    local description="${aur_descriptions[$pkg]}"
-    local pkg_type="${aur_pkg_types[$pkg]}"
-    
-    {
-        flock -x 200
-        echo -e "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}"
-        
-        if [ -n "$description" ]; then
-            if [ "$search_desc" = true ]; then
-                local highlighted_desc="$description"
-                for term in "${search_terms[@]}"; do
-                    highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
-                done
-                printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
-            else
-                printf "%b" "${COL_DIM}$description${COL_RESET}\n"
-            fi
-        fi
-
-        if [ "$pkg_type" = "devel" ]; then
-            local pkg_color="${COL_CYAN}"
-        else
-            local pkg_color="${COL_RED}"
-        fi
-        
-        echo -e "${COL_YELLOW}└─ Source: AUR [${COL_RESET}${pkg_color}${pkg_type}${COL_RESET}${COL_YELLOW}]${COL_RESET}"
-        
-        if [[ -z "$remote_version" ]]; then
-            echo -e "${COL_YELLOW}   $WARNING Unable to fetch remote version${COL_RESET}"
-        elif [[ "$current_version" != "$remote_version" ]]; then
-            local colored_current=$(compare_versions "$current_version" "$remote_version")
-            local colored_remote=$(compare_versions "$remote_version" "$current_version")
-            echo -e "   ${COL_YELLOW}$UP_ARROW Update available: ${COL_RESET}v$colored_current -> v$colored_remote"
-        else
-            echo -e "${COL_GREEN}   $CHECK_MARK Up to date${COL_RESET}"
-        fi
-        echo
-    } 200>/tmp/pacheck.lock &
-    
-    track_child $!
-}
-
-
 # semantic versioning comparison for color coding
 compare_versions() {
     local current=$1
@@ -550,98 +479,97 @@ pkgcheck() {
 fi
 
     # AUR installed packages
-    # AUR installed packages
-if [ "$exclude_aur" = false ]; then
-    local found_aur=false
-    local aur_installed=$(pacman -Qqm)  # Cache installed AUR packages once
-    local aur_pkgs=""
-    
-    # Cache AUR data first
-    cache_aur_data
-    
-    # Build search results based on mode
-    for term in "${search_terms[@]}"; do
-        local search_result=""
-        if [ "$exact_match" = true ]; then
-            search_result=$(echo "$aur_installed" | grep -i "^${term}$")
-        elif [ "$search_desc" = true ]; then
-            # Use cached descriptions from cache_aur_data
-            for pkg in ${aur_installed}; do
-                if echo "${pkg} ${aur_descriptions[$pkg]}" | grep -qi "$term"; then
-                    search_result+="$pkg"$'\n'
-                fi
-            done
-        else
-            search_result=$(echo "$aur_installed" | grep -i "$term")
-        fi
-        
-        # Append results if we found any
-        if [ -n "$search_result" ]; then
-            aur_pkgs+="${search_result}"$'\n'
-        fi
-    done
-    
-    # Process results if we found any
-    if [ -n "$aur_pkgs" ]; then
-        echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
-        echo -e "${COL_BOLD_YELLOW}AUR Installed:${COL_RESET}"
-        found_aur=true
-        
-        echo "$aur_pkgs" | sort -u | while read -r pkg; do
-            if [[ -n "$pkg" ]]; then
-                found_packages[$pkg]=1
-                process_local_aur "$pkg"
-            fi
-        done
-        wait
-    fi
-fi
-
     if [ "$exclude_aur" = false ]; then
-    local found_aur=false
-    local aur_installed=$(pacman -Qqm)  # Cache installed AUR packages once
-    local aur_pkgs=""
-    
-    # Cache AUR data first
-    cache_aur_data
-    
-    # Build search results based on mode
-    for term in "${search_terms[@]}"; do
-        local search_result=""
+        local found_aur=false
+        local aur_pkgs=""
+        local aur_names=""
+        
         if [ "$exact_match" = true ]; then
-            search_result=$(echo "$aur_installed" | grep -i "^${term}$")
-        elif [ "$search_desc" = true ]; then
-            # Use cached descriptions from cache_aur_data
-            for pkg in ${aur_installed}; do
-                if echo "${pkg} ${aur_descriptions[$pkg]}" | grep -qi "$term"; then
-                    search_result+="$pkg"$'\n'
+            for term in "${search_terms[@]}"; do
+                if [ -n "$aur_pkgs" ]; then
+                    aur_pkgs="$aur_pkgs"$'\n'"$(echo "$aur_cache" | grep -i "^${term} ")"
+                else
+                    aur_pkgs="$(echo "$aur_cache" | grep -i "^${term} ")"
+                fi
+            done
+        elif [ "$search_desc" = true ] && command -v expac >/dev/null 2>&1; then
+            for term in "${search_terms[@]}"; do
+                if [ -n "$aur_pkgs" ]; then
+                    aur_pkgs="$aur_pkgs"$'\n'"$(expac -Q '%n %d' | grep -i "$term" | grep -f <(echo "$aur_cache" | cut -d' ' -f1))"
+                else
+                    aur_pkgs="$(expac -Q '%n %d' | grep -i "$term" | grep -f <(echo "$aur_cache" | cut -d' ' -f1))"
                 fi
             done
         else
-            search_result=$(echo "$aur_installed" | grep -i "$term")
+            for term in "${search_terms[@]}"; do
+                if [ -n "$aur_pkgs" ]; then
+                    aur_pkgs="$aur_pkgs"$'\n'"$(echo "$aur_cache" | grep -i "$term")"
+                else
+                    aur_pkgs="$(echo "$aur_cache" | grep -i "$term")"
+                fi
+            done
         fi
         
-        # Append results if we found any
-        if [ -n "$search_result" ]; then
-            aur_pkgs+="${search_result}"$'\n'
-        fi
-    done
-    
-    # Process results if we found any
-    if [ -n "$aur_pkgs" ]; then
-        echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
-        echo -e "${COL_BOLD_YELLOW}AUR Installed:${COL_RESET}"
-        found_aur=true
-        
-        echo "$aur_pkgs" | sort -u | while read -r pkg; do
+
+        aur_names=$(echo "$aur_pkgs" | cut -d' ' -f1 | tr '\n' ' ')
+
+        # fetch all AUR versions
+        fetch_aur_versions "$aur_names"
+        while IFS= read -r line; do
+            local pkg=$(echo "$line" | cut -d' ' -f1)
             if [[ -n "$pkg" ]]; then
+                if [[ "$found_aur" == false ]]; then
+                    echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+                    echo -e "${COL_BOLD_YELLOW}AUR Installed:${COL_RESET}"
+                    found_aur=true
+                fi
+                
+                installed_count=$((installed_count + 1))
                 found_packages[$pkg]=1
-                process_local_aur "$pkg"
+                local current_version="${pkg_versions[$pkg]}"
+                local remote_version="${aur_remote_versions[$pkg]}"
+                local description=$(yay -Qi "$pkg" 2>/dev/null | grep "^Description" | cut -d: -f2- | sed 's/^ //')
+
+                # dev package check
+                if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
+                    local pkg_type="${COL_CYAN}devel${COL_RESET}"
+                else
+                    # light purple
+                    local pkg_type="${COL_RED}aur${COL_RESET}"
+                fi
+
+                # Print package name first
+                echo -e "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}"
+                
+                # Add description handling
+                if [ -n "$description" ]; then
+                    if [ "$search_desc" = true ]; then
+                        local highlighted_desc="$description"
+                        for term in "${search_terms[@]}"; do
+                            highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
+                        done
+                        printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+                    else
+                        printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+                    fi
+                fi
+
+                # Print source line only once
+                echo -e "${COL_YELLOW}└─ Source: AUR [${COL_RESET}${pkg_type}${COL_YELLOW}]${COL_RESET}"
+                
+                if [[ -z "$remote_version" ]]; then
+                    echo -e "${COL_YELLOW}   $WARNING Unable to fetch remote version${COL_RESET}"
+                elif [[ "$current_version" != "$remote_version" ]]; then
+                    local colored_current=$(compare_versions "$current_version" "$remote_version")
+                    local colored_remote=$(compare_versions "$remote_version" "$current_version")
+                    echo -e "   ${COL_YELLOW}$UP_ARROW Update available: ${COL_RESET}v$colored_current -> v$colored_remote"
+                else
+                    echo -e "${COL_GREEN}   $CHECK_MARK Up to date${COL_RESET}"
+                fi
+                echo
             fi
-        done
-        wait
+        done <<< "$aur_pkgs"
     fi
-fi
 
     # remote check if -r flag
     if [ "$check_remote" = true ]; then
