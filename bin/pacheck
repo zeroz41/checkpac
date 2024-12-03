@@ -187,7 +187,7 @@ process_remote_pkg() {
 
     {
         flock -x 200
-        echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$vers)${COL_RESET}"
+        printf "%b" "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$vers)${COL_RESET}\n"
         if [ -n "$description" ]; then
             if [ "$search_desc" = true ]; then
                 local highlighted_desc="$description"
@@ -199,8 +199,7 @@ process_remote_pkg() {
                 printf "%b" "${COL_DIM}$description${COL_RESET}\n"
             fi
         fi
-        echo -e "${COL_BLUE}└─ Available in official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}"
-        echo
+        printf "%b" "${COL_BLUE}└─ Available in official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}\n\n"
     } 200>/tmp/pacheck.lock &
     
     track_child $!
@@ -585,17 +584,17 @@ fi
                 if [ "$exact_match" = true ]; then
                     for term in "${search_terms[@]}"; do
                         if [ -n "$remote_pkgs" ]; then
-                            remote_pkgs="$remote_pkgs"$'\n'"$(pacman -Sl | grep -i "^[^ ]* ${term}$")"
+                            remote_pkgs="$remote_pkgs"$'\n'"$(pacman -Sl | grep -i "^[^ ]* ${term} ")"
                         else
-                            remote_pkgs="$(pacman -Sl | grep -i "^[^ ]* ${term}$")"
+                            remote_pkgs="$(pacman -Sl | grep -i "^[^ ]* ${term} ")"
                         fi
                     done
                 elif [ "$search_desc" = true ]; then
                     for term in "${search_terms[@]}"; do
                         if [ -n "$remote_pkgs" ]; then
-                            remote_pkgs="$remote_pkgs"$'\n'"$(pacman -Ss "$term" | grep "^[^ ]*/[^ ]*")"
+                            remote_pkgs="$remote_pkgs"$'\n'"$(expac -S '%n\t%v\t%r\t%d' | grep -i "$term")"
                         else
-                            remote_pkgs="$(pacman -Ss "$term" | grep "^[^ ]*/[^ ]*")"
+                            remote_pkgs="$(expac -S '%n\t%v\t%r\t%d' | grep -i "$term")"
                         fi
                     done
                 else
@@ -614,19 +613,17 @@ fi
                     found_official=true
 
                     while IFS= read -r line; do
-                        local repo pkg vers rest
-                        if [[ "$line" == */* ]]; then
-                            repo=$(echo "$line" | cut -d'/' -f1)
-                            pkg=$(echo "$line" | cut -d'/' -f2 | cut -d' ' -f1)
-                            vers=$(echo "$line" | cut -d' ' -f2)
+                        local pkg=""
+                        if [ "$search_desc" = true ]; then
+                            pkg=$(echo "$line" | cut -f1)
                         else
-                            read -r repo pkg vers rest <<< "$line"
+                            pkg=$(echo "$line" | awk '{print $2}')
                         fi
 
                         if [[ -n "$pkg" ]] && ! pacman -Q "$pkg" &>/dev/null && [[ -z "${found_packages[$pkg]}" ]]; then
                             remote_count=$((remote_count + 1))
                             found_packages[$pkg]=1
-                            process_remote_pkg "$repo" "$pkg" "$vers" &
+                            process_remote_pkg "$pkg"
 
                             # Limit concurrent processes
                             manage_processes
