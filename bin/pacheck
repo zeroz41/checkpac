@@ -257,91 +257,98 @@ get_hash_color() {
 
 fetch_aur_versions() {
     local pkgs="$1"
-    # Only fetch if we have packages to check and AUR isn't excluded
     if [ -n "$pkgs" ] && [ "$exclude_aur" = false ]; then
-        # Convert space-separated packages into comma-separated for the API
-        local pkg_list=$(echo "$pkgs" | tr ' ' ',')
-        # Single request for all packages
-        curl -s "https://aur.archlinux.org/rpc/v5/info?arg[]=$(echo "$pkg_list")" | 
-            jq -r '.results[] | select(.Version != null) | "\(.Name) \(.Version)"' |
-            while read -r pkg version; do
-                aur_remote_versions[$pkg]=$version
-            done
+        # Single compact API call just for versions
+        local response=$(curl -s -G \
+            "https://aur.archlinux.org/rpc/v5/info" \
+            $(for pkg in $pkgs; do echo "--data-urlencode arg[]=$pkg"; done))
+        
+        if [ -n "$response" ]; then
+            # Direct assignment using readarray to avoid subshell
+            local tempfile=$(mktemp)
+            echo "$response" | jq -r '.results[] | select(.Version != null) | "\(.Name) \(.Version)"' > "$tempfile"
+            
+            while IFS=' ' read -r pkg version; do
+                aur_remote_versions["$pkg"]="$version"
+            done < "$tempfile"
+            
+            rm -f "$tempfile"
+        fi
     fi
 }
 
+
+# for locally installed aur
 cache_aur_descriptions() {
     local pkgs="$1"
     if [ -n "$pkgs" ]; then
-        # For installed packages, use expac
+        echo "DEBUG: Packages to look up: $pkgs" >&2
+        
+        # Clear the array first to be safe
+        declare -g -A aur_descriptions=()
+        
+        echo "DEBUG: Raw expac output:" >&2
+        expac -Q '%n %d' $pkgs 2>/dev/null | tee /dev/stderr
+        
+        echo "DEBUG: Processing descriptions..." >&2
         while read -r pkg desc; do
             if [ -n "$pkg" ] && [ -n "$desc" ]; then
+                echo "DEBUG: Before set: $pkg current value -> ${aur_descriptions[$pkg]}" >&2
                 aur_descriptions[$pkg]="$desc"
+                echo "DEBUG: After set: $pkg new value -> ${aur_descriptions[$pkg]}" >&2
             fi
         done < <(expac -Q '%n %d' $pkgs 2>/dev/null)
         
-        # For non-installed packages, use single AUR RPC request
-        local pkg_list=$(echo "$pkgs" | tr ' ' ',')
-        curl -s "https://aur.archlinux.org/rpc/v5/info?arg[]=$(echo "$pkg_list")" |
-            jq -r '.results[] | select(.Description != null) | "\(.Name) \(.Description)"' |
-            while read -r pkg desc; do
-                if [ -z "${aur_descriptions[$pkg]}" ]; then
-                    aur_descriptions[$pkg]="$desc"
-                fi
-            done
+        echo "DEBUG: Immediately after loop:" >&2
+        for pkg in $pkgs; do
+            echo "DEBUG: $pkg -> ${aur_descriptions[$pkg]}" >&2
+        done
+        
+        echo "DEBUG: Array keys:" >&2
+        printf "%s\n" "${!aur_descriptions[@]}" >&2
+        
+        echo "DEBUG: Array values:" >&2
+        printf "%s\n" "${aur_descriptions[@]}" >&2
     fi
 }
 
 yay_search() {
     local search_term="$1"
     local batch_size=50
-    local max_results=200
-    local offset=0
     
-    # Run in own process group
-    set -m
+    echo "DEBUG YAY: Searching for: $search_term" >&2
+    
     (
-        while [ $offset -lt $max_results ]; do
-            # Get batch of results with offset
-            local response=$(curl -G --compressed --connect-timeout 10 \
-                "https://aur.archlinux.org/rpc/v5/search" \
-                --data-urlencode "by=name" \
-                --data-urlencode "arg=$search_term" \
-                --data-urlencode "offset=$offset" \
-                --data-urlencode "limit=$batch_size" 2>/dev/null)
+        # Single request with larger batch size
+        local response=$(curl -G --compressed --connect-timeout 10 \
+            "https://aur.archlinux.org/rpc/v5/search" \
+            --data-urlencode "by=name" \
+            --data-urlencode "arg=$search_term" \
+            --data-urlencode "limit=$batch_size" 2>/dev/null)
 
-            # Check if we got a valid response with results
-            if [ -z "$response" ] || echo "$response" | jq -e '.error' >/dev/null 2>&1; then
-                break
-            fi
+        if [ -z "$response" ] || echo "$response" | jq -e '.error' >/dev/null 2>&1; then
+            echo "DEBUG YAY: Empty or error response" >&2
+            return 1
+        fi
 
-            # Count results in this batch
-            local count=$(echo "$response" | jq -r '.results | length')
-            if [ "$count" -eq 0 ]; then
-                break
-            fi
+        local count=$(echo "$response" | jq -r '.results | length')
+        if [ "$count" -eq 0 ]; then
+            echo "DEBUG YAY: No results" >&2
+            return 0
+        fi
 
-            # Process and output results
-            echo "$response" | jq -r --arg search "$search_term" '.results[] | 
-                select(.Name != null and .Version != null) | 
-                "aur/\(.Name) \(.Version)" + 
-                (if .NumVotes and .NumVotes > 0 then " (+\(.NumVotes) \(.Popularity))" else "" end) +
-                "\n    \(.Description)"'
-
-            offset=$((offset + count))
-
-            # Check for cleanup signal
-            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-                break
-            fi
-        done
+        echo "DEBUG YAY: Processing $count results" >&2
+        
+        # Output format for package info and description
+        echo "$response" | jq -r --arg search "$search_term" '.results[] | 
+            select(.Name != null and .Version != null) | 
+            "aur/\(.Name) \(.Version)\nDESC:\(.Description)"'
+            
     ) &
     local search_pid=$!
-
-    # Wait with timeout
+    
     wait $search_pid 2>/dev/null || true
-
-    # Handle cleanup
+    
     if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
         kill -- -$search_pid 2>/dev/null || true
         return 1
@@ -805,21 +812,24 @@ pkgcheck() {
                 local first_result=true
                 # Read results from temp file
                 while IFS= read -r line || [ -n "$line" ]; do
-                    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-                        break
-                    fi
+                if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+                    break
+                fi
 
-                    if [[ $line =~ ^aur/ ]]; then
-                        local pkg=$(echo "$line" | cut -d'/' -f2)
-                        local version=$(echo "$pkg" | cut -d' ' -f2)
-                        pkg=$(echo "$pkg" | cut -d' ' -f1)
-                        local description=""
+                if [[ $line =~ ^aur/ ]]; then
+                    local pkg=$(echo "$line" | cut -d'/' -f2)
+                    local version=$(echo "$pkg" | cut -d' ' -f2)
+                    pkg=$(echo "$pkg" | cut -d' ' -f1)
+                    local description=""
 
-                        # Read the next line for description if it exists
-                        if [ "$search_desc" = true ] || [ "$exact_match" = false ]; then
-                            read -r desc_line
-                            description=$(echo "$desc_line" | sed 's/^[[:space:]]*//;s/^://')
+                    # Read the next line for description if it exists
+                    if [ "$search_desc" = true ] || [ "$exact_match" = false ]; then
+                        read -r desc_line
+                        # Modified to properly extract description
+                        if [[ "$desc_line" =~ ^DESC: ]]; then
+                            description="${desc_line#DESC:}"
                         fi
+                    fi
 
                         if [[ -n "$pkg" ]] && [[ -z "${found_packages[$pkg]}" ]]; then
                             if [ "$first_result" = true ]; then
