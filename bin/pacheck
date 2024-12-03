@@ -608,6 +608,11 @@ pkgcheck() {
 
         # Only proceed if we found any AUR packages
         if [ -n "$aur_names" ]; then
+            # Print the AUR header once before processing packages
+            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+            echo -e "${COL_BOLD_YELLOW}AUR Installed:${COL_RESET}"
+            found_aur=true
+
             # Fetch versions synchronously but with interrupt check
             if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
                 fetch_aur_versions "$aur_names"
@@ -615,19 +620,11 @@ pkgcheck() {
             fi
 
             # Process and display results with streaming
-            local first_result=true
             while IFS= read -r pkg; do
                 if [[ -n "$pkg" ]] && [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
                     {
                         flock -x 200
                         if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
-                            if [ "$first_result" = true ]; then
-                                echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
-                                echo -e "${COL_BOLD_YELLOW}AUR Installed:${COL_RESET}"
-                                first_result=false
-                                found_aur=true
-                            fi
-
                             installed_count=$((installed_count + 1))
                             found_packages[$pkg]=1
                             local current_version="${pkg_versions[$pkg]}"
