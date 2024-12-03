@@ -314,48 +314,158 @@ cache_aur_descriptions() {
 yay_search() {
     local search_term="$1"
     local batch_size=50
-    local max_results=200 # Restore pagination but with streaming
+    local max_results=200
     local offset=0
-
+    
     echo "DEBUG YAY: Searching for: $search_term" >&2
-
-    (
-        while [ $offset -lt $max_results ]; do
-            local response=$(curl -G --compressed --connect-timeout 10 \
-                "https://aur.archlinux.org/rpc/v5/search" \
-                --data-urlencode "by=name" \
-                --data-urlencode "arg=$search_term" \
-                --data-urlencode "offset=$offset" \
-                --data-urlencode "limit=$batch_size" 2>/dev/null)
-
-            if [ -z "$response" ] || echo "$response" | jq -e '.error' >/dev/null 2>&1; then
-                echo "DEBUG YAY: Empty or error response" >&2
-                break
+    
+    # Debug the initial API call
+    local initial_url="https://aur.archlinux.org/rpc/v5/search?type=search&by=name&arg=${search_term}"
+    echo "DEBUG YAY: Initial API URL: $initial_url" >&2
+    
+    local response=$(curl -s "$initial_url")
+    echo "DEBUG YAY: Raw API response: $response" >&2
+    
+    local total_results=0
+    if [ -n "$response" ]; then
+        total_results=$(echo "$response" | jq -r '.resultcount // 0')
+        echo "DEBUG YAY: Total results available: $total_results" >&2
+        
+        if [ "$total_results" -eq 0 ]; then
+            echo "DEBUG YAY: No results found" >&2
+            return 0
+        fi
+        
+        # Process and output the results
+        echo "$response" | jq -r '.results[] | "aur/\(.Name) \(.Version)\nDESC:\(.Description)"' | \
+        while IFS= read -r line; do
+            if [[ $line =~ ^aur/ ]] || [[ $line =~ ^DESC: ]]; then
+                echo "$line"
+                echo "DEBUG YAY: Output line: $line" >&2
             fi
-
-            local count=$(echo "$response" | jq -r '.results | length')
-            if [ "$count" -eq 0 ]; then
-                echo "DEBUG YAY: No results" >&2
-                break
-            fi
-
-            echo "DEBUG YAY: Processing $count results at offset $offset" >&2
-
-            # Process and output each result immediately
-            echo "$response" | jq -r --arg search "$search_term" '.results[] | 
-                select(.Name != null and .Version != null) | 
-                "aur/\(.Name) \(.Version)\nDESC:\(.Description)"'
-
-            offset=$((offset + count))
-
-            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-                break
-            fi
-
-            # Small delay to allow processing between batches
-            sleep 0.1
         done
-    )
+    else
+        echo "DEBUG YAY: Failed to get response" >&2
+        return 1
+    fi
+    
+    # If we need more results, fetch additional pages
+    offset=$batch_size
+    while [ $offset -lt $total_results ] && [ $offset -lt $max_results ]; do
+        echo "DEBUG YAY: Fetching next batch at offset $offset" >&2
+        
+        local next_url="https://aur.archlinux.org/rpc/v5/search?type=search&by=name&arg=${search_term}&offset=$offset"
+        echo "DEBUG YAY: Next batch URL: $next_url" >&2
+        
+        response=$(curl -s "$next_url")
+        if [ -n "$response" ]; then
+            echo "$response" | jq -r '.results[] | "aur/\(.Name) \(.Version)\nDESC:\(.Description)"' | \
+            while IFS= read -r line; do
+                if [[ $line =~ ^aur/ ]] || [[ $line =~ ^DESC: ]]; then
+                    echo "$line"
+                    echo "DEBUG YAY: Output line: $line" >&2
+                fi
+            done
+        fi
+        
+        offset=$((offset + batch_size))
+        sleep 0.1
+    done
+    
+    echo "DEBUG YAY: Search complete" >&2
+}
+
+process_aur_results() {
+    local fifo="$1"
+    shift
+    local search_terms=("$@")
+    local processed_count=0
+    
+    echo "DEBUG PROCESSOR: Starting to read from FIFO" >&2
+    
+    while IFS= read -r line || [ -n "$line" ]; do
+        echo "DEBUG PROCESSOR: Read line: $line" >&2
+        
+        if [[ $line =~ ^aur/ ]]; then
+            local pkg=$(echo "$line" | cut -d'/' -f2)
+            local version=$(echo "$pkg" | cut -d' ' -f2)
+            pkg=$(echo "$pkg" | cut -d' ' -f1)
+            
+            # Read description line
+            read -r desc_line
+            echo "DEBUG PROCESSOR: Got description: $desc_line" >&2
+            
+            local description="${desc_line#DESC:}"
+            
+            {
+                flock -x 200
+                if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+                    processed_count=$((processed_count + 1))
+                    echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
+                    
+                    if [ -n "$description" ]; then
+                        local highlighted_desc="$description"
+                        for term in "${search_terms[@]}"; do
+                            highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
+                        done
+                        printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+                    fi
+                    
+                    echo -e "${COL_YELLOW}└─ Available in AUR [${COL_RESET}aur${COL_YELLOW}]${COL_RESET}\n"
+                    echo "DEBUG PROCESSOR: Displayed package $pkg ($processed_count total)" >&2
+                fi
+            } 200>/tmp/pacheck.lock
+        fi
+    done <"$fifo"
+    
+    echo "DEBUG PROCESSOR: Finished processing. Total packages: $processed_count" >&2
+}
+
+process_aur_results() {
+    local fifo="$1"
+    shift
+    local search_terms=("$@")
+    local processed_count=0
+    
+    echo "DEBUG PROCESSOR: Starting to read from FIFO" >&2
+    
+    # Ensure we don't block forever
+    while IFS= read -r line || [ -n "$line" ]; do
+        echo "DEBUG PROCESSOR: Read line: ${line:0:50}..." >&2
+        
+        if [[ $line =~ ^aur/ ]]; then
+            local pkg=$(echo "$line" | cut -d'/' -f2)
+            local version=$(echo "$pkg" | cut -d' ' -f2)
+            pkg=$(echo "$pkg" | cut -d' ' -f1)
+            
+            # Read description line
+            read -r desc_line <"$fifo"
+            echo "DEBUG PROCESSOR: Got description for $pkg" >&2
+            
+            local description="${desc_line#DESC:}"
+            
+            {
+                flock -x 200
+                if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+                    processed_count=$((processed_count + 1))
+                    echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
+                    
+                    if [ -n "$description" ]; then
+                        local highlighted_desc="$description"
+                        for term in "${search_terms[@]}"; do
+                            highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
+                        done
+                        printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+                    fi
+                    
+                    echo -e "${COL_YELLOW}└─ Available in AUR [${COL_RESET}aur${COL_YELLOW}]${COL_RESET}\n"
+                    echo "DEBUG PROCESSOR: Displayed package $pkg ($processed_count total)" >&2
+                fi
+            } 200>/tmp/pacheck.lock
+        fi
+    done <"$fifo"
+    
+    echo "DEBUG PROCESSOR: Finished processing. Total packages: $processed_count" >&2
 }
 
 # semantic versioning comparison for color coding
@@ -770,77 +880,48 @@ pkgcheck() {
             fi
         } &
 
-        # print aur remote if not excluded
+        # aur remote search |||| remote aur
         if [ "$exclude_aur" = false ]; then
-            local first_result=true
-            local found_remote_aur=false
             local remote_count=0
-
-            # Process each search term
+            
+            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+            echo -e "${COL_BOLD_YELLOW}AUR Available:${COL_RESET}"
+            
+            echo "DEBUG MAIN: Setting up FIFO" >&2
+            local results_fifo=$(mktemp -u)
+            mkfifo "$results_fifo"
+            trap 'rm -f "$results_fifo"' EXIT
+            
+            echo "DEBUG MAIN: Starting result processor" >&2
+            process_aur_results "$results_fifo" "${search_terms[@]}" &
+            local processor_pid=$!
+            
+            # Process each search term separately instead of combining
             for term in "${search_terms[@]}"; do
-                if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-                    break
-                fi
-
-                # Create a temp file for this term's results
-                local term_temp_file=$(mktemp)
-                trap 'rm -f "$term_temp_file"' EXIT
-
-                yay_search "$term" >"$term_temp_file" &
+                echo "DEBUG MAIN: Processing search term: $term" >&2
+                yay_search "$term" > "$results_fifo" &
                 local search_pid=$!
-
-                # Process results as they come in
-                tail -f "$term_temp_file" | while IFS= read -r line || [ -n "$line" ]; do
-                    # Process and display each line as it arrives
-                    if [[ $line =~ ^aur/ ]]; then
-                        local pkg=$(echo "$line" | cut -d'/' -f2)
-                        local version=$(echo "$pkg" | cut -d' ' -f2)
-                        pkg=$(echo "$pkg" | cut -d' ' -f1)
-                        local description=""
-
-                        # Read the description line
-                        read -r desc_line
-                        if [[ "$desc_line" =~ ^DESC: ]]; then
-                            description="${desc_line#DESC:}"
-                        fi
-
-                        # Display immediately with flock
-                        {
-                            flock -x 200
-                            if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
-                                if [ "$first_result" = true ]; then
-                                    echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
-                                    echo -e "${COL_BOLD_YELLOW}AUR Available:${COL_RESET}"
-                                    first_result=false
-                                    found_remote_aur=true
-                                fi
-
-                                remote_count=$((remote_count + 1))
-                                found_packages[$pkg]=1
-
-                                echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
-                                if [ -n "$description" ]; then
-                                    if [ "$search_desc" = true ]; then
-                                        local highlighted_desc="$description"
-                                        for term in "${search_terms[@]}"; do
-                                            highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
-                                        done
-                                        printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
-                                    else
-                                        printf "%b" "${COL_DIM}$description${COL_RESET}\n"
-                                    fi
-                                fi
-                                echo -e "${COL_YELLOW}└─ Available in AUR [${COL_RESET}aur${COL_YELLOW}]${COL_RESET}\n"
-                            fi
-                        } 200>/tmp/pacheck.lock &
-                    fi
-                done
-
-                # Wait for search and processing to complete
+                
+                echo "DEBUG MAIN: Waiting for search to complete (PID: $search_pid)" >&2
                 wait $search_pid 2>/dev/null || true
-                rm -f "$term_temp_file"
             done
+            
+            echo "DEBUG MAIN: All searches complete, closing FIFO" >&2
+            exec 3>"$results_fifo"
+            exec 3>&-
+            
+            echo "DEBUG MAIN: Waiting for processor to finish (PID: $processor_pid)" >&2
+            wait $processor_pid 2>/dev/null || true
+            
+            echo "DEBUG MAIN: Cleaning up" >&2
+            rm -f "$results_fifo"
+            
+            if [ $remote_count -eq 0 ]; then
+                echo -e "${COL_RED}$X_MARK No packages found in AUR${COL_RESET}"
+            fi
         fi
+
+
 
         if [ $remote_count -eq 0 ]; then
             echo -e "${COL_RED}$X_MARK No additional packages found in repositories${COL_RESET}"
