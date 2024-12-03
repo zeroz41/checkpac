@@ -280,6 +280,26 @@ cache_aur_descriptions() {
     fi
 }
 
+yay_search() {
+    # Run yay in its own process group
+    set -m
+    (
+        # Set timeout for yay command
+        timeout 10s yay -Ss "$@" 2>/dev/null
+    ) &
+    local yay_pid=$!
+
+    # Wait for yay with timeout
+    wait $yay_pid 2>/dev/null || true
+    
+    # If cleanup triggered, kill the process group
+    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+        kill -- -$yay_pid 2>/dev/null || true
+        return 1
+    fi
+}
+
+
 # semantic versioning comparison for color coding
 compare_versions() {
     local current=$1
@@ -697,99 +717,128 @@ fi
 
         # print aur remote if not excluded
         if [ "$exclude_aur" = false ]; then
-            {
-                # Use a temp file to store results to avoid issues with pipefail
-                local temp_file=$(mktemp)
-                trap 'rm -f "$temp_file"' EXIT
-                
-                if [ "$exact_match" = true ]; then
-                    for term in "${search_terms[@]}"; do
-                        if ! yay -Ss "^${term}$" >> "$temp_file" 2>/dev/null; then
-                            break
-                        fi
-                    done
-                elif [ "$search_desc" = true ]; then
-                    for term in "${search_terms[@]}"; do
-                        if ! yay -Ss "$term" >> "$temp_file" 2>/dev/null; then
-                            break
-                        fi
-                    done
-                else
-                    for term in "${search_terms[@]}"; do
-                        if ! yay -Ss "$term" | grep "^aur/.*$term" >> "$temp_file" 2>/dev/null; then
-                            break
-                        fi
-                    done
-                fi
+    local temp_file=$(mktemp)
+    trap 'rm -f "$temp_file"' EXIT
+    
+    # Early exit if cleanup already triggered
+    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+        rm -f "$temp_file"
+        return
+    fi
+    
+    if [ "$exact_match" = true ]; then
+        for term in "${search_terms[@]}"; do
+            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+                break
+            fi
+            if ! yay_search "^${term}$" >> "$temp_file"; then
+                break
+            fi
+        done
+    elif [ "$search_desc" = true ]; then
+        for term in "${search_terms[@]}"; do
+            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+                break
+            fi
+            if ! yay_search "$term" >> "$temp_file"; then
+                break
+            fi
+        done
+    else
+        for term in "${search_terms[@]}"; do
+            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+                break
+            fi
+            if ! yay_search "$term" | grep "^aur/.*$term" >> "$temp_file"; then
+                break
+            fi
+        done
+    fi
 
-                local first_result=true
-                # Read results from temp file
-                while IFS= read -r line || [ -n "$line" ]; do
-                    if [[ $line =~ ^aur/ ]]; then
-                        local pkg=$(echo "$line" | cut -d'/' -f2)
-                        local version=$(echo "$pkg" | cut -d' ' -f2)
-                        pkg=$(echo "$pkg" | cut -d' ' -f1)
-                        local description=""
-                        
-                        # Read the next line for description if it exists
-                        if [ "$search_desc" = true ] || [ "$exact_match" = false ]; then
-                            read -r desc_line
-                            description=$(echo "$desc_line" | sed 's/^[[:space:]]*//;s/^://')
-                        fi
-                        
-                        # Check if we should continue processing
-                        if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-                            rm -f "$temp_file"
-                            return
-                        fi
-                        
-                        if [[ -n "$pkg" ]] && [[ -z "${found_packages[$pkg]}" ]]; then
-                            if [ "$first_result" = true ]; then
+    # Process results only if we haven't been interrupted
+    if [ "$CLEANUP_IN_PROGRESS" = "0" ] && [ -s "$temp_file" ]; then
+        local first_result=true
+        # Read results from temp file
+        while IFS= read -r line || [ -n "$line" ]; do
+            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+                break
+            fi
+            
+            if [[ $line =~ ^aur/ ]]; then
+                local pkg=$(echo "$line" | cut -d'/' -f2)
+                local version=$(echo "$pkg" | cut -d' ' -f2)
+                pkg=$(echo "$pkg" | cut -d' ' -f1)
+                local description=""
+                
+                # Read the next line for description if it exists
+                if [ "$search_desc" = true ] || [ "$exact_match" = false ]; then
+                    read -r desc_line
+                    description=$(echo "$desc_line" | sed 's/^[[:space:]]*//;s/^://')
+                fi
+                
+                if [[ -n "$pkg" ]] && [[ -z "${found_packages[$pkg]}" ]]; then
+                    if [ "$first_result" = true ]; then
+                        {
+                            flock -x 200
+                            if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
                                 echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
                                 echo -e "${COL_BOLD_YELLOW}AUR Available:${COL_RESET}"
-                                first_result=false
-                                found_remote_aur=true
                             fi
-                            remote_count=$((remote_count + 1))
-                            found_packages[$pkg]=1
-                            
-                            if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
-                                local pkg_type="${COL_CYAN}devel${COL_RESET}"
-                            else
-                                local pkg_type="${COL_YELLOW}aur${COL_RESET}"
-                            fi
-
-                            {
-                                flock -x 200
-                                if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
-                                    echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
-                                    if [ -n "$description" ]; then
-                                        if [ "$search_desc" = true ]; then
-                                            local highlighted_desc="$description"
-                                            for term in "${search_terms[@]}"; do
-                                                highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
-                                            done
-                                            printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
-                                        else
-                                            printf "%b" "${COL_DIM}$description${COL_RESET}\n"
-                                        fi
-                                    fi
-                                    echo -e "${COL_YELLOW}└─ Available in AUR [${COL_RESET}${pkg_type}${COL_YELLOW}]${COL_RESET}"
-                                    echo
-                                fi
-                            } 200>/tmp/pacheck.lock &
-                            track_child $!
-                        fi
+                        } 200>/tmp/pacheck.lock
+                        first_result=false
+                        found_remote_aur=true
                     fi
-                done < "$temp_file"
-                
-                rm -f "$temp_file"
-                wait
-            } &
-        fi
+                    
+                    remote_count=$((remote_count + 1))
+                    found_packages[$pkg]=1
+                    
+                    if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
+                        local pkg_type="${COL_CYAN}devel${COL_RESET}"
+                    else
+                        local pkg_type="${COL_YELLOW}aur${COL_RESET}"
+                    fi
 
-        # wait for background processes
+                    # Launch display in background
+                    {
+                        flock -x 200
+                        if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+                            echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
+                            if [ -n "$description" ]; then
+                                if [ "$search_desc" = true ]; then
+                                    local highlighted_desc="$description"
+                                    for term in "${search_terms[@]}"; do
+                                        highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
+                                    done
+                                    printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+                                else
+                                    printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+                                fi
+                            fi
+                            echo -e "${COL_YELLOW}└─ Available in AUR [${COL_RESET}${pkg_type}${COL_YELLOW}]${COL_RESET}"
+                            echo
+                        fi
+                    } 200>/tmp/pacheck.lock &
+                    
+                    local display_pid=$!
+                    CHILD_PIDS+=($display_pid)
+                    
+                    # Manage concurrent processes
+                    manage_processes
+                    
+                    # Check if cleanup was triggered
+                    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+                        break
+                    fi
+                fi
+            fi
+        done < "$temp_file"
+        
+        # Wait for any remaining display processes
         wait
+    fi
+    
+    rm -f "$temp_file"
+fi
 
         if [ $remote_count -eq 0 ]; then
             echo -e "${COL_RED}$X_MARK No additional packages found in repositories${COL_RESET}"
