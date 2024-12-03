@@ -657,7 +657,7 @@ fi
                     done
                 else
                     for term in "${search_terms[@]}"; do
-                        if ! yay -Ss "$term" 2>/dev/null | grep -E "^aur/|^    " >> "$temp_file"; then
+                        if ! yay -Ss "$term" | grep "^aur/.*$term" >> "$temp_file" 2>/dev/null; then
                             break
                         fi
                     done
