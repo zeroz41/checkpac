@@ -262,34 +262,33 @@ fetch_aur_versions() {
         local response=$(curl -s -G \
             "https://aur.archlinux.org/rpc/v5/info" \
             $(for pkg in $pkgs; do echo "--data-urlencode arg[]=$pkg"; done))
-        
+
         if [ -n "$response" ]; then
             # Direct assignment using readarray to avoid subshell
             local tempfile=$(mktemp)
-            echo "$response" | jq -r '.results[] | select(.Version != null) | "\(.Name) \(.Version)"' > "$tempfile"
-            
+            echo "$response" | jq -r '.results[] | select(.Version != null) | "\(.Name) \(.Version)"' >"$tempfile"
+
             while IFS=' ' read -r pkg version; do
                 aur_remote_versions["$pkg"]="$version"
-            done < "$tempfile"
-            
+            done <"$tempfile"
+
             rm -f "$tempfile"
         fi
     fi
 }
-
 
 # for locally installed aur
 cache_aur_descriptions() {
     local pkgs="$1"
     if [ -n "$pkgs" ]; then
         echo "DEBUG: Packages to look up: $pkgs" >&2
-        
+
         # Clear the array first to be safe
         declare -g -A aur_descriptions=()
-        
+
         echo "DEBUG: Raw expac output:" >&2
         expac -Q '%n %d' $pkgs 2>/dev/null | tee /dev/stderr
-        
+
         echo "DEBUG: Processing descriptions..." >&2
         while read -r pkg desc; do
             if [ -n "$pkg" ] && [ -n "$desc" ]; then
@@ -298,15 +297,15 @@ cache_aur_descriptions() {
                 echo "DEBUG: After set: $pkg new value -> ${aur_descriptions[$pkg]}" >&2
             fi
         done < <(expac -Q '%n %d' $pkgs 2>/dev/null)
-        
+
         echo "DEBUG: Immediately after loop:" >&2
         for pkg in $pkgs; do
             echo "DEBUG: $pkg -> ${aur_descriptions[$pkg]}" >&2
         done
-        
+
         echo "DEBUG: Array keys:" >&2
         printf "%s\n" "${!aur_descriptions[@]}" >&2
-        
+
         echo "DEBUG: Array values:" >&2
         printf "%s\n" "${aur_descriptions[@]}" >&2
     fi
@@ -315,44 +314,48 @@ cache_aur_descriptions() {
 yay_search() {
     local search_term="$1"
     local batch_size=50
-    
+    local max_results=200 # Restore pagination but with streaming
+    local offset=0
+
     echo "DEBUG YAY: Searching for: $search_term" >&2
-    
+
     (
-        # Single request with larger batch size
-        local response=$(curl -G --compressed --connect-timeout 10 \
-            "https://aur.archlinux.org/rpc/v5/search" \
-            --data-urlencode "by=name" \
-            --data-urlencode "arg=$search_term" \
-            --data-urlencode "limit=$batch_size" 2>/dev/null)
+        while [ $offset -lt $max_results ]; do
+            local response=$(curl -G --compressed --connect-timeout 10 \
+                "https://aur.archlinux.org/rpc/v5/search" \
+                --data-urlencode "by=name" \
+                --data-urlencode "arg=$search_term" \
+                --data-urlencode "offset=$offset" \
+                --data-urlencode "limit=$batch_size" 2>/dev/null)
 
-        if [ -z "$response" ] || echo "$response" | jq -e '.error' >/dev/null 2>&1; then
-            echo "DEBUG YAY: Empty or error response" >&2
-            return 1
-        fi
+            if [ -z "$response" ] || echo "$response" | jq -e '.error' >/dev/null 2>&1; then
+                echo "DEBUG YAY: Empty or error response" >&2
+                break
+            fi
 
-        local count=$(echo "$response" | jq -r '.results | length')
-        if [ "$count" -eq 0 ]; then
-            echo "DEBUG YAY: No results" >&2
-            return 0
-        fi
+            local count=$(echo "$response" | jq -r '.results | length')
+            if [ "$count" -eq 0 ]; then
+                echo "DEBUG YAY: No results" >&2
+                break
+            fi
 
-        echo "DEBUG YAY: Processing $count results" >&2
-        
-        # Output format for package info and description
-        echo "$response" | jq -r --arg search "$search_term" '.results[] | 
-            select(.Name != null and .Version != null) | 
-            "aur/\(.Name) \(.Version)\nDESC:\(.Description)"'
-            
-    ) &
-    local search_pid=$!
-    
-    wait $search_pid 2>/dev/null || true
-    
-    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-        kill -- -$search_pid 2>/dev/null || true
-        return 1
-    fi
+            echo "DEBUG YAY: Processing $count results at offset $offset" >&2
+
+            # Process and output each result immediately
+            echo "$response" | jq -r --arg search "$search_term" '.results[] | 
+                select(.Name != null and .Version != null) | 
+                "aur/\(.Name) \(.Version)\nDESC:\(.Description)"'
+
+            offset=$((offset + count))
+
+            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+                break
+            fi
+
+            # Small delay to allow processing between batches
+            sleep 0.1
+        done
+    )
 }
 
 # semantic versioning comparison for color coding
@@ -769,130 +772,74 @@ pkgcheck() {
 
         # print aur remote if not excluded
         if [ "$exclude_aur" = false ]; then
-            local temp_file=$(mktemp)
-            trap 'rm -f "$temp_file"' EXIT
+            local first_result=true
+            local found_remote_aur=false
+            local remote_count=0
 
-            # Early exit if cleanup already triggered
-            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-                rm -f "$temp_file"
-                return
-            fi
-
-            if [ "$exact_match" = true ]; then
-                for term in "${search_terms[@]}"; do
-                    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-                        break
-                    fi
-                    if ! yay_search "^${term}$" >>"$temp_file"; then
-                        break
-                    fi
-                done
-            elif [ "$search_desc" = true ]; then
-                for term in "${search_terms[@]}"; do
-                    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-                        break
-                    fi
-                    if ! yay_search "$term" >>"$temp_file"; then
-                        break
-                    fi
-                done
-            else
-                for term in "${search_terms[@]}"; do
-                    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-                        break
-                    fi
-                    if ! yay_search "$term" | grep "^aur/.*$term" >>"$temp_file"; then
-                        break
-                    fi
-                done
-            fi
-
-            # Process results only if we haven't been interrupted
-            if [ "$CLEANUP_IN_PROGRESS" = "0" ] && [ -s "$temp_file" ]; then
-                local first_result=true
-                # Read results from temp file
-                while IFS= read -r line || [ -n "$line" ]; do
+            # Process each search term
+            for term in "${search_terms[@]}"; do
                 if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
                     break
                 fi
 
-                if [[ $line =~ ^aur/ ]]; then
-                    local pkg=$(echo "$line" | cut -d'/' -f2)
-                    local version=$(echo "$pkg" | cut -d' ' -f2)
-                    pkg=$(echo "$pkg" | cut -d' ' -f1)
-                    local description=""
+                # Create a temp file for this term's results
+                local term_temp_file=$(mktemp)
+                trap 'rm -f "$term_temp_file"' EXIT
 
-                    # Read the next line for description if it exists
-                    if [ "$search_desc" = true ] || [ "$exact_match" = false ]; then
+                yay_search "$term" >"$term_temp_file" &
+                local search_pid=$!
+
+                # Process results as they come in
+                tail -f "$term_temp_file" | while IFS= read -r line || [ -n "$line" ]; do
+                    # Process and display each line as it arrives
+                    if [[ $line =~ ^aur/ ]]; then
+                        local pkg=$(echo "$line" | cut -d'/' -f2)
+                        local version=$(echo "$pkg" | cut -d' ' -f2)
+                        pkg=$(echo "$pkg" | cut -d' ' -f1)
+                        local description=""
+
+                        # Read the description line
                         read -r desc_line
-                        # Modified to properly extract description
                         if [[ "$desc_line" =~ ^DESC: ]]; then
                             description="${desc_line#DESC:}"
                         fi
-                    fi
 
-                        if [[ -n "$pkg" ]] && [[ -z "${found_packages[$pkg]}" ]]; then
-                            if [ "$first_result" = true ]; then
-                                {
-                                    flock -x 200
-                                    if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
-                                        echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
-                                        echo -e "${COL_BOLD_YELLOW}AUR Available:${COL_RESET}"
-                                    fi
-                                } 200>/tmp/pacheck.lock
-                                first_result=false
-                                found_remote_aur=true
-                            fi
-
-                            remote_count=$((remote_count + 1))
-                            found_packages[$pkg]=1
-
-                            if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
-                                local pkg_type="${COL_CYAN}devel${COL_RESET}"
-                            else
-                                local pkg_type="${COL_YELLOW}aur${COL_RESET}"
-                            fi
-
-                            # Launch display in background
-                            {
-                                flock -x 200
-                                if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
-                                    echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
-                                    if [ -n "$description" ]; then
-                                        if [ "$search_desc" = true ]; then
-                                            local highlighted_desc="$description"
-                                            for term in "${search_terms[@]}"; do
-                                                highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
-                                            done
-                                            printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
-                                        else
-                                            printf "%b" "${COL_DIM}$description${COL_RESET}\n"
-                                        fi
-                                    fi
-                                    echo -e "${COL_YELLOW}└─ Available in AUR [${COL_RESET}${pkg_type}${COL_YELLOW}]${COL_RESET}"
-                                    echo
+                        # Display immediately with flock
+                        {
+                            flock -x 200
+                            if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+                                if [ "$first_result" = true ]; then
+                                    echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+                                    echo -e "${COL_BOLD_YELLOW}AUR Available:${COL_RESET}"
+                                    first_result=false
+                                    found_remote_aur=true
                                 fi
-                            } 200>/tmp/pacheck.lock &
 
-                            local display_pid=$!
-                            CHILD_PIDS+=($display_pid)
+                                remote_count=$((remote_count + 1))
+                                found_packages[$pkg]=1
 
-                            # Manage concurrent processes
-                            manage_processes
-
-                            # Check if cleanup was triggered
-                            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-                                break
+                                echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
+                                if [ -n "$description" ]; then
+                                    if [ "$search_desc" = true ]; then
+                                        local highlighted_desc="$description"
+                                        for term in "${search_terms[@]}"; do
+                                            highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
+                                        done
+                                        printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+                                    else
+                                        printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+                                    fi
+                                fi
+                                echo -e "${COL_YELLOW}└─ Available in AUR [${COL_RESET}aur${COL_YELLOW}]${COL_RESET}\n"
                             fi
-                        fi
+                        } 200>/tmp/pacheck.lock &
                     fi
-                done <"$temp_file"
+                done
 
-                # Wait for any remaining display processes
-                wait
-            fi
-
-            rm -f "$temp_file"
+                # Wait for search and processing to complete
+                wait $search_pid 2>/dev/null || true
+                rm -f "$term_temp_file"
+            done
         fi
 
         if [ $remote_count -eq 0 ]; then
