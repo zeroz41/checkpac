@@ -144,37 +144,55 @@ process_installed_pkgs() {
     local description="${official_descriptions[$pkg]}"
     local repo_type=$(get_repo_type "$pkg" "$repo")
     
+    # Early exit if cleanup is in progress
+    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+        return 1
+    fi
+    
     {
         flock -x 200
-        printf "%b" "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}\n"
-        
-        if [ -n "$description" ]; then
-            if [ "$search_desc" = true ]; then
-                local highlighted_desc="$description"
-                for term in "${search_terms[@]}"; do
-                    highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
-                done
-                printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
-            else
-                printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+        if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+            printf "%b" "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}\n"
+            
+            if [ -n "$description" ]; then
+                if [ "$search_desc" = true ]; then
+                    local highlighted_desc="$description"
+                    for term in "${search_terms[@]}"; do
+                        highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
+                    done
+                    printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+                else
+                    printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+                fi
             fi
+            
+            printf "%b" "${COL_BLUE}└─ Source: Official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}\n"
+            
+            if [[ -z "$remote_version" ]]; then
+                printf "%b" "${COL_YELLOW}   $WARNING Unable to fetch remote version${COL_RESET}\n"
+            elif [[ "$current_version" != "$remote_version" ]]; then
+                local colored_current=$(compare_versions "$current_version" "$remote_version")
+                local colored_remote=$(compare_versions "$remote_version" "$current_version")
+                printf "%b" "   ${COL_YELLOW}$UP_ARROW Update available: ${COL_RESET}v$colored_current -> v$colored_remote\n"
+            else
+                printf "%b" "${COL_GREEN}   $CHECK_MARK Up to date${COL_RESET}\n"
+            fi
+            printf "\n"
         fi
-        
-        printf "%b" "${COL_BLUE}└─ Source: Official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}\n"
-        
-        if [[ -z "$remote_version" ]]; then
-            printf "%b" "${COL_YELLOW}   $WARNING Unable to fetch remote version${COL_RESET}\n"
-        elif [[ "$current_version" != "$remote_version" ]]; then
-            local colored_current=$(compare_versions "$current_version" "$remote_version")
-            local colored_remote=$(compare_versions "$remote_version" "$current_version")
-            printf "%b" "   ${COL_YELLOW}$UP_ARROW Update available: ${COL_RESET}v$colored_current -> v$colored_remote\n"
-        else
-            printf "%b" "${COL_GREEN}   $CHECK_MARK Up to date${COL_RESET}\n"
-        fi
-        printf "\n"
     } 200>/tmp/pacheck.lock &
     
-    track_child $!
+    local display_pid=$!
+    CHILD_PIDS+=($display_pid)
+    
+    # Wait for this display to complete before moving to next
+    wait $display_pid 2>/dev/null || true
+    
+    # Check if cleanup was triggered during processing
+    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+        return 1
+    fi
+    
+    return 0
 }
 
 # remote repo handling...pacman is slow af compared to yay
@@ -185,24 +203,42 @@ process_remote_pkg() {
     local description="${official_descriptions[$pkg]}"
     local repo_type=$(get_repo_type "$pkg" "$repo")
 
+    # Early exit if cleanup is in progress
+    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+        return 1
+    fi
+
     {
         flock -x 200
-        printf "%b" "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$vers)${COL_RESET}\n"
-        if [ -n "$description" ]; then
-            if [ "$search_desc" = true ]; then
-                local highlighted_desc="$description"
-                for term in "${search_terms[@]}"; do
-                    highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
-                done
-                printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
-            else
-                printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+        if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+            printf "%b" "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$vers)${COL_RESET}\n"
+            if [ -n "$description" ]; then
+                if [ "$search_desc" = true ]; then
+                    local highlighted_desc="$description"
+                    for term in "${search_terms[@]}"; do
+                        highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
+                    done
+                    printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+                else
+                    printf "%b" "${COL_DIM}$description${COL_RESET}\n"
+                fi
             fi
+            printf "%b" "${COL_BLUE}└─ Available in official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}\n\n"
         fi
-        printf "%b" "${COL_BLUE}└─ Available in official repositories [${COL_RESET}${repo_type}${COL_BLUE}]${COL_RESET}\n\n"
     } 200>/tmp/pacheck.lock &
     
-    track_child $!
+    local display_pid=$!
+    CHILD_PIDS+=($display_pid)
+    
+    # Wait for this display to complete
+    wait $display_pid 2>/dev/null || true
+    
+    # Check if cleanup was triggered during processing
+    if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+        return 1
+    fi
+    
+    return 0
 }
 
 
@@ -472,18 +508,25 @@ pkgcheck() {
         done
     fi
     
-    # Process installed packages
+    # Process installed packages with better interrupt handling
     while IFS= read -r line; do
+        if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+            break
+        fi
+        
         local pkg=$(echo "$line" | cut -d' ' -f1)
         if [[ -n "$pkg" ]] && ! echo "$aur_cache" | grep -q "^${pkg} "; then
             installed_count=$((installed_count + 1))
             found_packages[$pkg]=1
-            process_installed_pkgs "$pkg" &
             
-            manage_processes
+            # Process package and check return status
+            if ! process_installed_pkgs "$pkg"; then
+                break
+            fi
         fi
     done <<< "$installed_pkgs"
 
+    # Wait for any remaining processes
     wait
 
     if [ $installed_count -eq 0 ]; then
