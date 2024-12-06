@@ -308,7 +308,16 @@ yay_search() {
     
     # Time the initial request
     local start_time=$(date +%s.%N)
-    local response=$(curl -s -w '\n%{time_total}\n' "https://aur.archlinux.org/rpc/v5/search?type=search&by=name&arg=${search_term}")
+    # Modify search URL based on search_desc flag
+    local search_url="https://aur.archlinux.org/rpc/v5/search?arg=${search_term}"
+    if [ "$search_desc" = true ]; then
+        search_url="${search_url}&by=name-desc"
+    else
+        search_url="${search_url}&by=name"
+    fi
+    search_url="${search_url}&type=search"
+    
+    local response=$(curl -s -w '\n%{time_total}\n' "$search_url")
     local end_time=$(date +%s.%N)
     local curl_time=$(echo "$response" | tail -n1)
     local json_response=$(echo "$response" | sed '$d')
@@ -345,7 +354,7 @@ yay_search() {
         echo "[FETCHER] Processing offset $offset..." >&2
         
         start_time=$(date +%s.%N)
-        response=$(curl -s -w '\n%{time_total}\n' "https://aur.archlinux.org/rpc/v5/search?type=search&by=name&arg=${search_term}&offset=$offset")
+        response=$(curl -s -w '\n%{time_total}\n' "${search_url}&offset=$offset")
         end_time=$(date +%s.%N)
         
         curl_time=$(echo "$response" | tail -n1)
@@ -716,20 +725,52 @@ pkgcheck() {
 
     # AUR installed packages
     if [ "$exclude_aur" = false ]; then
-        local found_aur=false
-        local aur_pkgs=""
-        local aur_names=""
+    local found_aur=false
+    local aur_pkgs=""
+    local aur_names=""
 
-        # More efficient grep patterns
-        if [ "$exact_match" = true ]; then
-            aur_pkgs=$(echo "$aur_cache" | grep -E "^($(echo "${search_terms[@]}" | tr ' ' '|')) ")
-        elif [ "$search_desc" = true ] && command -v expac >/dev/null 2>&1; then
-            aur_pkgs=$(expac -Q '%n %d' | grep -E "($(echo "${search_terms[@]}" | tr ' ' '|'))" | grep -F -f <(echo "$aur_cache" | cut -d' ' -f1))
-        else
-            aur_pkgs=$(echo "$aur_cache" | grep -E "($(echo "${search_terms[@]}" | tr ' ' '|'))")
-        fi
+    # Debug output
+    if [ "$DEBUG_AUR" -eq 1 ]; then
+        echo "DEBUG: Search terms: ${search_terms[@]}"
+        echo "DEBUG: search_desc: $search_desc"
+        echo "DEBUG: exact_match: $exact_match"
+    fi
 
-        aur_names=$(echo "$aur_pkgs" | cut -d' ' -f1)
+    # More efficient grep patterns
+    if [ "$exact_match" = true ]; then
+        # Exact match - only match package names
+        aur_pkgs=$(echo "$aur_cache" | grep -E "^($(echo "${search_terms[@]}" | tr ' ' '|')) ")
+    elif [ "$search_desc" = true ] && command -v expac >/dev/null 2>&1; then
+        # Description search - using process substitution to avoid subshell issues
+        # Get all foreign (AUR) packages first
+        local aur_package_list=$(echo "$aur_cache" | cut -d' ' -f1)
+        
+        # For each AUR package, get its name and description, then search
+        while IFS= read -r pkg; do
+            local pkg_info=$(expac -Q '%n %d' "$pkg" 2>/dev/null)
+            for term in "${search_terms[@]}"; do
+                if echo "$pkg_info" | grep -qi "$term"; then
+                    aur_pkgs+="$pkg"$'\n'
+                    break
+                fi
+            done
+        done < <(echo "$aur_package_list")
+        
+        # Remove trailing newline
+        aur_pkgs=$(echo "$aur_pkgs" | sed '/^$/d')
+    else
+        # Regular name-only search
+        aur_pkgs=$(echo "$aur_cache" | grep -E "($(echo "${search_terms[@]}" | tr ' ' '|'))")
+    fi
+
+    # Debug output
+    if [ "$DEBUG_AUR" -eq 1 ]; then
+        echo "DEBUG: Found AUR packages:"
+        echo "$aur_pkgs"
+    fi
+
+    # Get package names only
+    aur_names=$(echo "$aur_pkgs" | cut -d' ' -f1)
 
         # Only proceed if we found any AUR packages
         if [ -n "$aur_names" ]; then
