@@ -680,7 +680,7 @@ pkgcheck() {
 
     # local official check
     if [ "$exclude_arch" = false ]; then
-        echo -e "\n${COL_BLUE}$DIVIDER${COL_RESET}"
+        echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
         echo -e "${COL_BOLD_CYAN}Official Repositories Installed:${COL_RESET}"
         echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
 
@@ -785,7 +785,7 @@ pkgcheck() {
         # Only proceed if we found any AUR packages
         if [ -n "$aur_names" ]; then
             # Print the AUR header once before processing packages
-            echo -e "\n${COL_YELLOW}$DIVIDER${COL_RESET}"
+            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
             echo -e "${COL_BOLD_YELLOW}AUR Installed:${COL_RESET}"
             echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
             found_aur=true
@@ -896,7 +896,7 @@ pkgcheck() {
             fi
 
             if [ -n "$remote_pkgs" ]; then
-                echo -e "\n${COL_BLUE}$DIVIDER${COL_RESET}"
+                echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
                 echo -e "${COL_BOLD_BLUE}Official Repositories Available:${COL_RESET}"
                 echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
 
@@ -927,7 +927,7 @@ pkgcheck() {
             local aur_count=0
             
             # Make sure we have a clear separation
-            echo -e "\n${COL_YELLOW}$DIVIDER${COL_RESET}"
+            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
             echo -e "${COL_BOLD_YELLOW}AUR Available:${COL_RESET}"
             echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
             
