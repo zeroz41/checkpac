@@ -456,7 +456,14 @@ process_aur_results() {
                                 fi
                             fi
                             
-                            echo -e "${COL_YELLOW}└─ Available in AUR${COL_RESET}\n"
+                            # Determine package type
+                            if [[ "$current_pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
+                                local pkg_type="${COL_CYAN}devel${COL_RESET}"
+                            else
+                                local pkg_type="${COL_RED}aur${COL_RESET}"
+                            fi
+                            
+                            echo -e "${COL_YELLOW}└─ Available in AUR [${pkg_type}]${COL_RESET}\n"
                         fi
                     } 200>/tmp/pacheck.lock
                 fi
