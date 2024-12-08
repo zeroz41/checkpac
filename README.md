@@ -2,7 +2,7 @@
 
 A fast and simple package checking tool for Arch Linux. Quickly find installed packages, check versions, and discover available packages using simple keyword searches. Get a clean, colorful overview of package status, update availability, and repository sources - all in one place. Perfect for when you need to quickly check what's on your system or find new packages to install.
 
-![image](https://github.com/user-attachments/assets/6982e19e-23dc-43bb-80ad-30f42e4ec628)
+![image](https://github.com/user-attachments/assets/d71063d9-5e8e-4acf-8fec-ea9257b323ce)
 
 
 ## Features
