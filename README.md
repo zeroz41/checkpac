@@ -93,7 +93,7 @@ checkpac -h
 
 ### Advanced Examples
 
-![image](https://github.com/user-attachments/assets/c2ca724d-bd1e-42ed-8ca8-87b5a2fd9495)
+![image](https://github.com/user-attachments/assets/6f2f7af3-3c78-4def-a6fc-69b26f5b1249)
 
 
 Search through descriptions and remote packages for multiple terms:
