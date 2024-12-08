@@ -1,26 +1,22 @@
-# pacheck
+# checkpac
 
 A fast and simple package checking tool for Arch Linux. Quickly find installed packages, check versions, and discover available packages using simple keyword searches. Get a clean, colorful overview of package status, update availability, and repository sources - all in one place. Perfect for when you need to quickly check what's on your system or find new packages to install.
-
-![Screenshot 1](screenshots/1.png)
-![Screenshot 2](screenshots/2.png)
-![Screenshot 3](screenshots/3.png)
 
 ## Features
 
 - **Simple package checking** - find packages using keywords, no exact names needed
-- **Check multiple packages at once** - pacheck firefox chrome vim
+- **Check multiple packages at once** - checkpac firefox chrome vim
 - **Fast results** - efficient parallel searching for quick lookups
 - **Clear, readable output** - color-coded information shows status at a glance
-- **Version checking** - easily see available updates
+- **Version checking** - easily see available updates. Arch repos check against synced package caches, while AUR check against AUR RPC Endpoint
 - **AUR support** - check AUR packages when yay is installed
 
 ## Installation
 
 Clone the repository:
 ```bash
-git clone https://github.com/zeroz/pacheck.git
-cd pacheck
+git clone https://github.com/zeroz/checkpac.git
+cd checkpac
 ```
 
 Install dependencies:
@@ -35,18 +31,18 @@ pacman -S yay  # For AUR support
 
 Make the script executable if not:
 ```bash
-chmod +x bin/pacheck
+chmod +x bin/checkpac
 ```
 
 You can either:
 1. Create an alias in your `.bashrc`
    ```bash
-   alias pacheck='/path/to/pacheck.bash'
+   alias checkpac='/path/to/checkpac.bash'
    ```
    
 2. Or copy to a directory in your PATH:
    ```bash
-   sudo cp bin/pacheck.bash /usr/local/bin/pacheck
+   sudo cp bin/checkpac.bash /usr/local/bin/checkpac
    ```
 
 ## Basic Usage
@@ -56,32 +52,32 @@ You may also search for exact package name matches, or choose to search and list
 
 Check a single package:
 ```bash
-pacheck wine
+checkpac wine
 ```
 
 Check multiple packages at once:
 ```bash
-pacheck firefox minecraf vim
+checkpac firefox minecraf vim
 ```
 
 
 Include remote packages (not installed):
 ```bash
-pacheck -r firefox chromium brave
+checkpac -r firefox chromium brave
 ```
 or 
 ```bash
-pacheck firefox chromium brave -r
+checkpac firefox chromium brave -r
 ```
 
 List all installed lib packages containing "lib"
 ```bash
-pacheck lib
+checkpac lib
 ```
 
 View the help menu :)
 ```bash
-pacheck -h
+checkpac -h
 ```
 
 
@@ -101,22 +97,22 @@ pacheck -h
 
 Search through descriptions and remote packages for multiple terms:
 ```bash
-pacheck -rd docker kubernetes podman container
+checkpac -rd docker kubernetes podman container
 ```
 
 Search for exact package matches:
 ```bash
-pacheck -e wine wine-staging wine-mono
+checkpac -e wine wine-staging wine-mono
 ```
 
 Check ONLY AUR packages locally installed:
 ```bash
-pacheck --exclude-arch paru yay aurutils
+checkpac --exclude-arch paru yay aurutils
 ```
 
 Check ONLY AUR packages, remote and installed:
 ```bash
-pacheck paru yay aurutils -r --exclude-aur
+checkpac paru yay aurutils -r --exclude-aur
 ```
 
 ### Features in Detail
