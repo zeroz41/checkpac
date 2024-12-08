@@ -12,7 +12,7 @@ A fast and simple package checking tool for Arch Linux. Quickly find installed p
 - **Fast results** - efficient parallel searching for quick lookups
 - **Clear, readable output** - color-coded information shows status at a glance
 - **Version checking** - easily see available updates. Arch repos check against synced package caches, while AUR check against AUR RPC Endpoint
-- **AUR support** - check AUR packages when yay is installed
+- **AUR support** - No aur helper needed. Uses RPC
 
 ## Installation
 
@@ -25,11 +25,6 @@ cd checkpac
 Install dependencies:
 ```bash
 pacman -S expac flock
-```
-
-Optional but recommended:
-```bash
-pacman -S yay  # For AUR support
 ```
 
 Make the script executable if not:
