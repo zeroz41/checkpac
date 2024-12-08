@@ -24,7 +24,7 @@ cd checkpac
 
 Install dependencies:
 ```bash
-pacman -S expac flock
+pacman -S expac flock jq
 ```
 
 Make the script executable if not:
