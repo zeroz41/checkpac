@@ -12,7 +12,7 @@ A fast and simple package checking tool for Arch Linux. Quickly find installed p
 - **Fast results** - efficient parallel searching for quick lookups
 - **Clear, readable output** - color-coded information shows status at a glance
 - **Version checking** - easily see available updates. Arch repos check against synced package caches, while AUR check against AUR RPC Endpoint
-- **AUR support** - No aur helper needed to be installed
+- **AUR support** - No aur helper needed to be installed. Paginates requests to AUR to be able to return large lists of results if required
 
 ## Installation
 
@@ -118,14 +118,6 @@ checkpac paru yay aurutils -r --exclude-aur
 
 ### Features in Detail
 
-#### Multi-Package Search
-- Search any number of packages simultaneously
-- Organized, clear output grouping
-- Efficient parallel processing
-- Smart result deduplication
-- Search for keyword in package name, exact name match, or search descriptions
-- In description search, highlights your keyword in the returned package description
-
 #### Version Checking
 - Color-coded version comparisons (installed vs detected in package cache)
 - Highlights version differences
@@ -143,6 +135,7 @@ checkpac paru yay aurutils -r --exclude-aur
 - Optional description searching
 - Case-insensitive by default
 - Exact matching option
+- Paginated API searches
 - Multiple package search support
 
 ## About
