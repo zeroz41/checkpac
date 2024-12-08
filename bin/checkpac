@@ -354,10 +354,12 @@ yay_search() {
     offset=$((offset + batch_size))
     
     # Process remaining batches
-    while [ $offset -lt $total_results ] && [ $offset -lt $max_results ]; do
-        if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-            break
-        fi
+    local total_results=$(echo "$json_response" | jq -r '.resultcount // 0')
+
+        while [ $offset -lt $total_results ] && [ $offset -lt $max_results ]; do
+            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+                break
+            fi
         
         [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Processing offset $offset..." >&2
         
@@ -424,7 +426,7 @@ process_aur_results() {
         
         # Process complete package entry
         if [[ "$line" == "END" ]]; then
-            if [[ $buffer =~ ^PKG:([^$'\n']*)[[:space:]]*$'\n'DESC:([^$'\n']*) ]]; then
+            if [[ $buffer =~ ^PKG:([^$'\n']*)[[:space:]]*$'\n'DESC:([^$'\n']*) ]] 2>/dev/null; then
                 local pkg_line="${BASH_REMATCH[1]}"
                 local desc="${BASH_REMATCH[2]}"
                 
@@ -967,19 +969,8 @@ main() {
     # Remove any stale lock file
     rm -f /tmp/pacheck.lock
 
-    # check for yay
-    if ! expac -Q '%n' yay &>/dev/null; then
-        echo -e "\e[33mWarning: 'yay' is not installed. AUR functionality will be disabled.\e[0m"
-        # If no yay, turn on exclude aur flag if not already present
-        if [[ ! " $@ " =~ " --exclude-aur " ]]; then
-            pkgcheck "$@" --exclude-aur
-        else
-            pkgcheck "$@"
-        fi
-    else
-        # yay is installed, run normally
-        pkgcheck "$@"
-    fi
+    # Run package check
+    pkgcheck "$@"
 
     # wait for all background processes to complete
     wait 2>/dev/null || true
