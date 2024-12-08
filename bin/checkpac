@@ -673,8 +673,11 @@ pkgcheck() {
 
     # local official check
     if [ "$exclude_arch" = false ]; then
+        echo -e "\n${COL_BLUE}$DIVIDER${COL_RESET}"
         echo -e "${COL_BOLD_CYAN}Official Repositories Installed:${COL_RESET}"
         echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+
+
         local installed_count=0
 
         # Get installed packages
@@ -775,8 +778,9 @@ pkgcheck() {
         # Only proceed if we found any AUR packages
         if [ -n "$aur_names" ]; then
             # Print the AUR header once before processing packages
-            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+            echo -e "\n${COL_YELLOW}$DIVIDER${COL_RESET}"
             echo -e "${COL_BOLD_YELLOW}AUR Installed:${COL_RESET}"
+            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
             found_aur=true
 
             # Fetch versions synchronously but with interrupt check
@@ -885,8 +889,10 @@ pkgcheck() {
             fi
 
             if [ -n "$remote_pkgs" ]; then
-                echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+                echo -e "\n${COL_BLUE}$DIVIDER${COL_RESET}"
                 echo -e "${COL_BOLD_BLUE}Official Repositories Available:${COL_RESET}"
+                echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+
                 found_official=true
 
                 while IFS= read -r line; do
@@ -916,6 +922,7 @@ pkgcheck() {
             # Make sure we have a clear separation
             echo -e "\n${COL_YELLOW}$DIVIDER${COL_RESET}"
             echo -e "${COL_BOLD_YELLOW}AUR Available:${COL_RESET}"
+            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
             
             [ "$DEBUG_AUR" -eq 1 ] && echo "DEBUG MAIN: Setting up FIFO" >&2
             local results_fifo=$(mktemp -u)
