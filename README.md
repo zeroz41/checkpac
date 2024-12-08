@@ -12,7 +12,7 @@ A fast and simple package checking tool for Arch Linux. Quickly find installed p
 - **Fast results** - efficient parallel searching for quick lookups
 - **Clear, readable output** - color-coded information shows status at a glance
 - **Version checking** - easily see available updates. Arch repos check against synced package caches, while AUR check against AUR RPC Endpoint
-- **AUR support** - check AUR packages when yay is installed
+- **AUR support** - No aur helper needed to be installed. Paginates requests to AUR to be able to return large lists of results if required
 
 ## Installation
 
@@ -24,12 +24,7 @@ cd checkpac
 
 Install dependencies:
 ```bash
-pacman -S expac flock
-```
-
-Optional but recommended:
-```bash
-pacman -S yay  # For AUR support
+pacman -S expac flock jq
 ```
 
 Make the script executable if not:
@@ -98,6 +93,9 @@ checkpac -h
 
 ### Advanced Examples
 
+![image](https://github.com/user-attachments/assets/c2ca724d-bd1e-42ed-8ca8-87b5a2fd9495)
+
+
 Search through descriptions and remote packages for multiple terms:
 ```bash
 checkpac -rd docker kubernetes podman container
@@ -120,14 +118,6 @@ checkpac paru yay aurutils -r --exclude-aur
 
 ### Features in Detail
 
-#### Multi-Package Search
-- Search any number of packages simultaneously
-- Organized, clear output grouping
-- Efficient parallel processing
-- Smart result deduplication
-- Search for keyword in package name, exact name match, or search descriptions
-- In description search, highlights your keyword in the returned package description
-
 #### Version Checking
 - Color-coded version comparisons (installed vs detected in package cache)
 - Highlights version differences
@@ -145,6 +135,7 @@ checkpac paru yay aurutils -r --exclude-aur
 - Optional description searching
 - Case-insensitive by default
 - Exact matching option
+- Paginated API searches
 - Multiple package search support
 
 ## About
