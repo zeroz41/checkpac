@@ -300,15 +300,15 @@ cache_aur_descriptions() {
 yay_search() {
     local search_term="$1"
     local fifo="$2"
-    local batch_size=50
+    local batch_size=100
     local max_results=200
     local offset=0
     
-    echo "[FETCHER] Started search for '$search_term'" >&2
+    # Only show debug if DEBUG_AUR is set
+    [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Started search for '$search_term'" >&2
     
-    # Time the initial request
+    # Initial request timing only shown in debug
     local start_time=$(date +%s.%N)
-    # Modify search URL based on search_desc flag
     local search_url="https://aur.archlinux.org/rpc/v5/search?arg=${search_term}"
     if [ "$search_desc" = true ]; then
         search_url="${search_url}&by=name-desc"
@@ -322,57 +322,55 @@ yay_search() {
     local curl_time=$(echo "$response" | tail -n1)
     local json_response=$(echo "$response" | sed '$d')
     
-    # Time the JSON parsing
-    local parse_start=$(date +%s.%N)
-    local total_results=$(echo "$json_response" | jq -r '.resultcount // 0')
-    local parse_end=$(date +%s.%N)
+    # Debug timing info
+    if [ "$DEBUG_AUR" -eq 1 ]; then
+        local parse_start=$(date +%s.%N)
+        local total_results=$(echo "$json_response" | jq -r '.resultcount // 0')
+        local parse_end=$(date +%s.%N)
+        
+        local total_time=$(echo "$end_time - $start_time" | bc)
+        local parse_time=$(echo "$parse_end - $parse_start" | bc)
+        
+        echo "[FETCHER] Initial request timing:" >&2
+        echo "  - CURL time: ${curl_time}s" >&2
+        echo "  - Parse time: ${parse_time}s" >&2
+        echo "  - Total time: ${total_time}s" >&2
+        echo "[FETCHER] Found $total_results total results" >&2
+    fi
     
-    local total_time=$(echo "$end_time - $start_time" | bc)
-    local parse_time=$(echo "$parse_end - $parse_start" | bc)
-    
-    echo "[FETCHER] Initial request timing:" >&2
-    echo "  - CURL time: ${curl_time}s" >&2
-    echo "  - Parse time: ${parse_time}s" >&2
-    echo "  - Total time: ${total_time}s" >&2
-    echo "[FETCHER] Found $total_results total results" >&2
-    
-    # Process first batch immediately from initial response
+    # Process first batch
     if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
         echo "$json_response" | jq -r --arg offset "$offset" '.results[] | 
             "PKG:aur/\(.Name) \(.Version)\nDESC:\(.Description)\nEND"
         ' > "$fifo"
     fi
     
+    # Early exit if we're done or cleaning up
+    if [ "$CLEANUP_IN_PROGRESS" = "1" ] || [ $(cat /tmp/pacheck_count.tmp 2>/dev/null || echo "0") -ge $max_results ]; then
+        echo "DONE" > "$fifo"
+        return
+    fi
+    
     offset=$((offset + batch_size))
     
-    # Process remaining batches with timing
+    # Process remaining batches
     while [ $offset -lt $total_results ] && [ $offset -lt $max_results ]; do
         if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
             break
         fi
         
-        echo "[FETCHER] Processing offset $offset..." >&2
+        [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Processing offset $offset..." >&2
         
-        start_time=$(date +%s.%N)
-        response=$(curl -s -w '\n%{time_total}\n' "${search_url}&offset=$offset")
-        end_time=$(date +%s.%N)
+        response=$(curl -s "${search_url}&offset=$offset")
         
-        curl_time=$(echo "$response" | tail -n1)
-        json_response=$(echo "$response" | sed '$d')
+        # Only show timing info in debug mode
+        if [ "$DEBUG_AUR" -eq 1 ]; then
+            echo "[FETCHER] Processed batch at offset $offset" >&2
+        fi
         
-        parse_start=$(date +%s.%N)
-        echo "$json_response" | jq -r --arg offset "$offset" '.results[] | 
+        echo "$response" | jq -r --arg offset "$offset" '.results[] | 
             "PKG:aur/\(.Name) \(.Version)\nDESC:\(.Description)\nEND"
         ' > "$fifo"
-        parse_end=$(date +%s.%N)
-        
-        total_time=$(echo "$end_time - $start_time" | bc)
-        parse_time=$(echo "$parse_end - $parse_start" | bc)
-        
-        echo "[FETCHER] Batch timing (offset $offset):" >&2
-        echo "  - CURL time: ${curl_time}s" >&2
-        echo "  - Parse time: ${parse_time}s" >&2
-        echo "  - Total time: ${total_time}s" >&2
         
         offset=$((offset + batch_size))
         sleep 0.1
@@ -854,70 +852,67 @@ pkgcheck() {
         local found_official=false
         local found_remote_aur=false
 
-        {
-            if [ "$exclude_arch" = false ]; then
-                local remote_pkgs=""
+        # Do official repos first, synchronously
+        if [ "$exclude_arch" = false ]; then
+            local remote_pkgs=""
 
-                if [ "$exact_match" = true ]; then
-                    for term in "${search_terms[@]}"; do
-                        if [ -n "$remote_pkgs" ]; then
-                            remote_pkgs="$remote_pkgs"$'\n'"$(pacman -Sl | grep -i "^[^ ]* ${term} ")"
-                        else
-                            remote_pkgs="$(pacman -Sl | grep -i "^[^ ]* ${term} ")"
-                        fi
-                    done
-                elif [ "$search_desc" = true ]; then
-                    for term in "${search_terms[@]}"; do
-                        if [ -n "$remote_pkgs" ]; then
-                            remote_pkgs="$remote_pkgs"$'\n'"$(expac -S '%n\t%v\t%r\t%d' | grep -i "$term")"
-                        else
-                            remote_pkgs="$(expac -S '%n\t%v\t%r\t%d' | grep -i "$term")"
-                        fi
-                    done
-                else
-                    for term in "${search_terms[@]}"; do
-                        if [ -n "$remote_pkgs" ]; then
-                            remote_pkgs="$remote_pkgs"$'\n'"$(pacman -Sl | grep -i "$term")"
-                        else
-                            remote_pkgs="$(pacman -Sl | grep -i "$term")"
-                        fi
-                    done
-                fi
-
-                if [ -n "$remote_pkgs" ]; then
-                    echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
-                    echo -e "${COL_BOLD_BLUE}Official Repositories Available:${COL_RESET}"
-                    found_official=true
-
-                    while IFS= read -r line; do
-                        local pkg=""
-                        if [ "$search_desc" = true ]; then
-                            pkg=$(echo "$line" | cut -f1)
-                        else
-                            pkg=$(echo "$line" | awk '{print $2}')
-                        fi
-
-                        if [[ -n "$pkg" ]] && ! pacman -Q "$pkg" &>/dev/null && [[ -z "${found_packages[$pkg]}" ]]; then
-                            remote_count=$((remote_count + 1))
-                            found_packages[$pkg]=1
-                            process_remote_pkg "$pkg"
-
-                            # Limit concurrent processes
-                            manage_processes
-                        fi
-                    done <<<"$remote_pkgs"
-
-                    # Wait for remaining background processes
-                    wait
-                fi
+            if [ "$exact_match" = true ]; then
+                for term in "${search_terms[@]}"; do
+                    if [ -n "$remote_pkgs" ]; then
+                        remote_pkgs="$remote_pkgs"$'\n'"$(pacman -Sl | grep -i "^[^ ]* ${term} ")"
+                    else
+                        remote_pkgs="$(pacman -Sl | grep -i "^[^ ]* ${term} ")"
+                    fi
+                done
+            elif [ "$search_desc" = true ]; then
+                for term in "${search_terms[@]}"; do
+                    if [ -n "$remote_pkgs" ]; then
+                        remote_pkgs="$remote_pkgs"$'\n'"$(expac -S '%n\t%v\t%r\t%d' | grep -i "$term")"
+                    else
+                        remote_pkgs="$(expac -S '%n\t%v\t%r\t%d' | grep -i "$term")"
+                    fi
+                done
+            else
+                for term in "${search_terms[@]}"; do
+                    if [ -n "$remote_pkgs" ]; then
+                        remote_pkgs="$remote_pkgs"$'\n'"$(pacman -Sl | grep -i "$term")"
+                    else
+                        remote_pkgs="$(pacman -Sl | grep -i "$term")"
+                    fi
+                done
             fi
-        } &
 
-        # aur remote search |||| remote aur
+            if [ -n "$remote_pkgs" ]; then
+                echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+                echo -e "${COL_BOLD_BLUE}Official Repositories Available:${COL_RESET}"
+                found_official=true
+
+                while IFS= read -r line; do
+                    local pkg=""
+                    if [ "$search_desc" = true ]; then
+                        pkg=$(echo "$line" | cut -f1)
+                    else
+                        pkg=$(echo "$line" | awk '{print $2}')
+                    fi
+
+                    if [[ -n "$pkg" ]] && ! pacman -Q "$pkg" &>/dev/null && [[ -z "${found_packages[$pkg]}" ]]; then
+                        remote_count=$((remote_count + 1))
+                        found_packages[$pkg]=1
+                        process_remote_pkg "$pkg"
+                    fi
+                done <<<"$remote_pkgs"
+
+                # Wait for any remaining processes to finish before moving to AUR section
+                wait 2>/dev/null || true
+            fi
+        fi
+
+        # Only start AUR search after official repos are done
         if [ "$exclude_aur" = false ]; then
-            local remote_count=0
+            local aur_count=0
             
-            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+            # Make sure we have a clear separation
+            echo -e "\n${COL_YELLOW}$DIVIDER${COL_RESET}"
             echo -e "${COL_BOLD_YELLOW}AUR Available:${COL_RESET}"
             
             [ "$DEBUG_AUR" -eq 1 ] && echo "DEBUG MAIN: Setting up FIFO" >&2
@@ -945,21 +940,20 @@ pkgcheck() {
             wait $processor_pid 2>/dev/null || true
             
             if [ -f "/tmp/pacheck_count.tmp" ]; then
-                remote_count=$(cat "/tmp/pacheck_count.tmp")
+                aur_count=$(cat "/tmp/pacheck_count.tmp")
                 rm -f "/tmp/pacheck_count.tmp"
             fi
             
             [ "$DEBUG_AUR" -eq 1 ] && echo "DEBUG MAIN: Cleaning up" >&2
             rm -f "$results_fifo"
             
-            if [ $remote_count -eq 0 ]; then
+            if [ $aur_count -eq 0 ]; then
                 echo -e "${COL_RED}$X_MARK No packages found in AUR${COL_RESET}"
             fi
         fi
 
-
-
-        if [ $remote_count -eq 0 ]; then
+        # Show no results message if neither section found anything
+        if [ $remote_count -eq 0 ] && [ ! "$found_official" = true ] && [ ! "$found_remote_aur" = true ]; then
             echo -e "${COL_RED}$X_MARK No additional packages found in repositories${COL_RESET}"
         fi
     fi
