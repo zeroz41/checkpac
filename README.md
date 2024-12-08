@@ -113,7 +113,7 @@ checkpac --exclude-arch paru yay aurutils
 
 Check ONLY AUR packages, remote and installed:
 ```bash
-checkpac paru yay aurutils -r --exclude-aur
+checkpac paru yay aurutils -r --exclude-arch
 ```
 
 ### Features in Detail
