@@ -12,7 +12,7 @@ A fast and simple package checking tool for Arch Linux. Quickly find installed p
 - **Fast results** - efficient parallel searching for quick lookups
 - **Clear, readable output** - color-coded information shows status at a glance
 - **Version checking** - easily see available updates. Arch repos check against synced package caches, while AUR check against AUR RPC Endpoint
-- **AUR support** - No aur helper needed. Uses RPC
+- **AUR support** - No aur helper needed to be installed
 
 ## Installation
 
