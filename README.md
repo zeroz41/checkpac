@@ -93,6 +93,9 @@ checkpac -h
 
 ### Advanced Examples
 
+![image](https://github.com/user-attachments/assets/c2ca724d-bd1e-42ed-8ca8-87b5a2fd9495)
+
+
 Search through descriptions and remote packages for multiple terms:
 ```bash
 checkpac -rd docker kubernetes podman container
