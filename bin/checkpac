@@ -371,7 +371,7 @@ process_package() {
             echo "[BATCH $batch:$count] aur/$name $version" >&2
             
             # Real display logic would go here
-            sleep 0.01  # Small delay to make output readable
+            #sleep 0.01  # Small delay to make output readable
         fi
     } 200>/tmp/pacheck.lock
 }
