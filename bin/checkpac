@@ -298,87 +298,146 @@ cache_aur_descriptions() {
 }
 
 yay_search() {
-    local search_term="$1"
-    local fifo="$2"
-    local batch_size=100
-    local max_results=200
-    local offset=0
+    local search_terms=("$@")  # Accept all arguments as search terms except the last one
+    local fifo="${search_terms[-1]}"  # Last argument is the FIFO
+    unset 'search_terms[-1]'  # Remove FIFO from search terms
     
-    # Only show debug if DEBUG_AUR is set
-    [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Started search for '$search_term'" >&2
+    local batch_size=200  # Display pagination size
+    local processed_pkgs=0
+    local temp_results=$(mktemp)
     
-    # Initial request timing only shown in debug
-    local start_time=$(date +%s.%N)
-    local search_url="https://aur.archlinux.org/rpc/v5/search?arg=${search_term}"
-    if [ "$search_desc" = true ]; then
-        search_url="${search_url}&by=name-desc"
-    else
-        search_url="${search_url}&by=name"
-    fi
-    search_url="${search_url}&type=search"
+    [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Started unified search for terms: ${search_terms[*]}" >&2
     
-    local response=$(curl -s -w '\n%{time_total}\n' "$search_url")
-    local end_time=$(date +%s.%N)
-    local curl_time=$(echo "$response" | tail -n1)
-    local json_response=$(echo "$response" | sed '$d')
-    
-    # Debug timing info
-    if [ "$DEBUG_AUR" -eq 1 ]; then
-        local parse_start=$(date +%s.%N)
-        local total_results=$(echo "$json_response" | jq -r '.resultcount // 0')
-        local parse_end=$(date +%s.%N)
+    # Process each term individually
+    for term in "${search_terms[@]}"; do
+        local encoded_term=$(printf "%s" "$term" | jq -sRr @uri)
+        local search_url="https://aur.archlinux.org/rpc/v5/search/${encoded_term}?by=$([ "$search_desc" = true ] && echo "name-desc" || echo "name")"
         
-        local total_time=$(echo "$end_time - $start_time" | bc)
-        local parse_time=$(echo "$parse_end - $parse_start" | bc)
+        [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Search URL: $search_url" >&2
         
-        echo "[FETCHER] Initial request timing:" >&2
-        echo "  - CURL time: ${curl_time}s" >&2
-        echo "  - Parse time: ${parse_time}s" >&2
-        echo "  - Total time: ${total_time}s" >&2
-        echo "[FETCHER] Found $total_results total results" >&2
-    fi
-    
-    # Process first batch
-    if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
-        echo "$json_response" | jq -r --arg offset "$offset" '.results[] | 
-            "PKG:aur/\(.Name) \(.Version)\nDESC:\(.Description)\nEND"
-        ' > "$fifo"
-    fi
-    
-    # Early exit if we're done or cleaning up
-    if [ "$CLEANUP_IN_PROGRESS" = "1" ] || [ $(cat /tmp/pacheck_count.tmp 2>/dev/null || echo "0") -ge $max_results ]; then
-        echo "DONE" > "$fifo"
-        return
-    fi
-    
-    offset=$((offset + batch_size))
-    
-    # Process remaining batches
-    local total_results=$(echo "$json_response" | jq -r '.resultcount // 0')
-
-        while [ $offset -lt $total_results ] && [ $offset -lt $max_results ]; do
-            if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-                break
-            fi
+        local response=$(curl -s "$search_url")
+        local total_found=$(echo "$response" | jq -r '.resultcount // 0')
+        [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Found $total_found results for term '$term'" >&2
         
-        [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Processing offset $offset..." >&2
-        
-        response=$(curl -s "${search_url}&offset=$offset")
-        
-        # Only show timing info in debug mode
-        if [ "$DEBUG_AUR" -eq 1 ]; then
-            echo "[FETCHER] Processed batch at offset $offset" >&2
+        if [ "$total_found" -gt 0 ]; then
+            # Get all results for this term
+            echo "$response" | jq -r '.results[] | select(.Name != null and .Version != null) | 
+                "\(.Name)\t\(.Version)\t\(.Description)"' >> "$temp_results"
         fi
-        
-        echo "$response" | jq -r --arg offset "$offset" '.results[] | 
-            "PKG:aur/\(.Name) \(.Version)\nDESC:\(.Description)\nEND"
-        ' > "$fifo"
-        
-        offset=$((offset + batch_size))
-        sleep 0.1
     done
     
+    # Sort and deduplicate all results
+    sort -u -k1,1 "$temp_results" > "${temp_results}.sorted"
+    mv "${temp_results}.sorted" "$temp_results"
+    
+    # Process results in display batches
+    local total_results=$(wc -l < "$temp_results")
+    [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Processing $total_results unique results in batches of $batch_size" >&2
+    
+    while IFS=$'\t' read -r name version desc; do
+        if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+            processed_pkgs=$((processed_pkgs + 1))
+            
+            echo "PKG:aur/$name $version"$'\n'"DESC:$desc"$'\n'"END" > "$fifo"
+            
+            # Pause after each batch to allow display to catch up
+            if [ $((processed_pkgs % batch_size)) -eq 0 ]; then
+                [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Processed batch of $batch_size (total: $processed_pkgs/$total_results)" >&2
+                sleep 0.1  # Small delay between batches
+            fi
+        else
+            break
+        fi
+    done < "$temp_results"
+    
+    rm -f "$temp_results"
+    
+    [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Search complete. Total processed: $processed_pkgs" >&2
     echo "DONE" > "$fifo"
+    return 0
+}
+
+process_aur_results() {
+    local fifo="$1"
+    shift
+    local search_terms=("$@")
+    local processed_count=0
+    local processed_pkgs=()
+    
+    [ "$DEBUG_AUR" -eq 1 ] && echo "[PROCESSOR] Starting to process results" >&2
+    
+    while IFS= read -r -t 30 line || [ -n "$line" ]; do
+        if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
+            [ "$DEBUG_AUR" -eq 1 ] && echo "[PROCESSOR] Breaking due to cleanup" >&2
+            break
+        fi
+        
+        if [ "$line" = "DONE" ]; then
+            [ "$DEBUG_AUR" -eq 1 ] && echo "[PROCESSOR] Received DONE signal. Exiting." >&2
+            break
+        fi
+        
+        if [[ $line =~ ^PKG:([^$'\n']*)[[:space:]]*$ ]]; then
+            local pkg_line="${BASH_REMATCH[1]}"
+            local pkg=$(echo "$pkg_line" | cut -d'/' -f2 | cut -d' ' -f1)
+            local version=$(echo "$pkg_line" | cut -d' ' -f2)
+            local desc=""
+            
+            # Read description with timeout
+            if ! read -r -t 5 desc_line; then
+                continue
+            fi
+            desc=${desc_line#DESC:}
+            
+            # Read END marker with timeout
+            if ! read -r -t 5 end_marker || [ "$end_marker" != "END" ]; then
+                continue
+            fi
+            
+            # Check if we've already processed this package
+            if [[ ! " ${processed_pkgs[@]} " =~ " ${pkg} " ]] && [ -z "${found_packages[$pkg]}" ]; then
+                processed_pkgs+=("$pkg")
+                found_packages[$pkg]=1
+                processed_count=$((processed_count + 1))
+                
+                [ "$DEBUG_AUR" -eq 1 ] && echo "[PROCESSOR] Processing package $processed_count: $pkg" >&2
+                
+                {
+                    flock -x 200
+                    if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+                        echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
+                        
+                        if [ -n "$desc" ]; then
+                            if [ "$search_desc" = true ]; then
+                                local highlighted_desc="$desc"
+                                for term in "${search_terms[@]}"; do
+                                    highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
+                                done
+                                printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
+                            else
+                                printf "%b" "${COL_DIM}$desc${COL_RESET}\n"
+                            fi
+                        fi
+                        
+                        if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
+                            local pkg_type="${COL_CYAN}devel${COL_RESET}"
+                        else
+                            local pkg_type="${COL_RED}aur${COL_RESET}"
+                        fi
+                        
+                        echo -e "${COL_YELLOW}└─ Available in AUR [${pkg_type}]${COL_RESET}\n"
+                    fi
+                } 200>/tmp/pacheck.lock
+            fi
+        fi
+    done < "$fifo"
+    
+    [ "$DEBUG_AUR" -eq 1 ] && echo "[PROCESSOR] Processing complete. Total packages processed: $processed_count" >&2
+    echo "$processed_count" > /tmp/pacheck_count.tmp
+    
+    # Force terminate after completion. KILL IT
+    kill -TERM $$ 2>/dev/null
+    return 0
 }
 
 process_package() {
@@ -397,83 +456,6 @@ process_package() {
             sleep 0.01  # Small delay to make output readable
         fi
     } 200>/tmp/pacheck.lock
-}
-
-# Call with:
-# yay_search "lib" 2>debug.log
-
-process_aur_results() {
-    local fifo="$1"
-    shift
-    local search_terms=("$@")
-    local processed_count=0
-    
-    local current_pkg=""
-    local current_version=""
-    local current_desc=""
-    local buffer=""
-    
-    while IFS= read -r line || [ -n "$line" ]; do
-        if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-            break
-        fi
-        
-        if [ "$line" = "DONE" ]; then
-            break
-        fi
-        
-        buffer+="$line"$'\n'
-        
-        # Process complete package entry
-        if [[ "$line" == "END" ]]; then
-            if [[ $buffer =~ ^PKG:([^$'\n']*)[[:space:]]*$'\n'DESC:([^$'\n']*) ]] 2>/dev/null; then
-                local pkg_line="${BASH_REMATCH[1]}"
-                local desc="${BASH_REMATCH[2]}"
-                
-                current_pkg=$(echo "$pkg_line" | cut -d'/' -f2 | cut -d' ' -f1)
-                current_version=$(echo "$pkg_line" | cut -d' ' -f2)
-                
-                # Skip if already processed
-                if [ -z "${found_packages[$current_pkg]}" ]; then
-                    found_packages[$current_pkg]=1
-                    
-                    {
-                        flock -x 200
-                        if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
-                            processed_count=$((processed_count + 1))
-                            
-                            echo -e "${COL_RED}$X_MARK $current_pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}"
-                            
-                            if [ -n "$desc" ]; then
-                                if [ "$search_desc" = true ]; then
-                                    local highlighted_desc="$desc"
-                                    for term in "${search_terms[@]}"; do
-                                        highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
-                                    done
-                                    printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
-                                else
-                                    printf "%b" "${COL_DIM}$desc${COL_RESET}\n"
-                                fi
-                            fi
-                            
-                            # Determine package type
-                            if [[ "$current_pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
-                                local pkg_type="${COL_CYAN}devel${COL_RESET}"
-                            else
-                                local pkg_type="${COL_RED}aur${COL_RESET}"
-                            fi
-                            
-                            echo -e "${COL_YELLOW}└─ Available in AUR [${pkg_type}]${COL_RESET}\n"
-                        fi
-                    } 200>/tmp/pacheck.lock
-                fi
-            fi
-            buffer=""
-        fi
-    done <"$fifo"
-    
-    # Store final count
-    echo "$processed_count" > /tmp/pacheck_count.tmp
 }
 
 # semantic versioning comparison for color coding
@@ -958,10 +940,10 @@ pkgcheck() {
             
             # Process each search term separately
             for term in "${search_terms[@]}"; do
-                [ "$DEBUG_AUR" -eq 1 ] && echo "DEBUG MAIN: Processing search term: $term" >&2
-                yay_search "$term" "$results_fifo" &
+                [ "$DEBUG_AUR" -eq 1 ] && echo "DEBUG MAIN: Processing search terms: ${search_terms[*]}" >&2
+                yay_search "${search_terms[@]}" "$results_fifo" &
                 local search_pid=$!
-                wait $search_pid 2>/dev/null || true
+                wait $search_pid
             done
             
             # Close the FIFO
