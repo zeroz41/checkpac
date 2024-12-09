@@ -306,47 +306,60 @@ yay_search() {
     local max_results=200
     local processed_pkgs=()
     
-    [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Started parallel search for terms: ${search_terms[*]}" >&2
+    [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Started unified search for terms: ${search_terms[*]}" >&2
     
-    # Create a temporary file to store all results before processing
+    # Create a temporary file to store results
     local temp_results=$(mktemp)
     
+    # Process each term individually and merge results
+    local all_results=""
     for term in "${search_terms[@]}"; do
-        [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER:$term] Starting search" >&2
+        # URL encode the search term
+        local encoded_term=$(printf "%s" "$term" | jq -sRr @uri)
         
-        local search_url="https://aur.archlinux.org/rpc/v5/search?arg=${term}"
-        search_url="${search_url}&by=$([ "$search_desc" = true ] && echo "name-desc" || echo "name")"
-        search_url="${search_url}&type=search"
+        # Construct the search URL with the term in the path
+        local search_url="https://aur.archlinux.org/rpc/v5/search/${encoded_term}?by=$([ "$search_desc" = true ] && echo "name-desc" || echo "name")"
+        
+        [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Search URL: $search_url" >&2
         
         local response=$(curl -s "$search_url")
-        local current_results=$(echo "$response" | jq -r '.resultcount // 0')
         
-        [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER:$term] Found $current_results results" >&2
+        # Debug the actual JSON response
+        [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Raw API Response for term '$term':" >&2
+        [ "$DEBUG_AUR" -eq 1 ] && echo "$response" | jq '.' >&2
         
-        if [ "$current_results" -gt 0 ] && [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
-            # Append results to temp file
-            echo "$response" | jq -r '.results[] | select(.Name != null and .Version != null) | 
-                "\(.Name)\t\(.Version)\t\(.Description)"' >> "$temp_results"
+        # Extract and accumulate results
+        local results=$(echo "$response" | jq -r '.results[] | select(.Name != null and .Version != null) | 
+            "\(.Name)\t\(.Version)\t\(.Description)"')
+        if [ -n "$results" ]; then
+            all_results="${all_results}${results}"$'\n'
         fi
-        
-        # Small delay between terms to prevent rate limiting
-        sleep 0.05
     done
     
-    # Sort and remove duplicates based on package name (first field)
-    if [ -f "$temp_results" ] && [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
-        [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Processing combined results" >&2
-        
-        sort -u -k1,1 "$temp_results" | while IFS=$'\t' read -r name version desc; do
-            if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
-                echo "PKG:aur/$name $version"$'\n'"DESC:$desc"$'\n'"END" > "$fifo"
-            fi
-        done
+    # Remove empty lines and write to temp file
+    echo "$all_results" | grep -v '^$' > "$temp_results"
+    
+    # Count total results
+    local total_results=$(wc -l < "$temp_results")
+    [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Found $total_results total results after merging" >&2
+    
+    if [ "$total_results" -gt 0 ] && [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+        # Sort and remove duplicates based on package name (first field)
+        if [ -f "$temp_results" ] && [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+            [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Processing combined results" >&2
+            
+            sort -u -k1,1 "$temp_results" | while IFS=$'\t' read -r name version desc; do
+                if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+                    # Send results through the FIFO with the same format as before
+                    echo "PKG:aur/$name $version"$'\n'"DESC:$desc"$'\n'"END" > "$fifo"
+                fi
+            done
+        fi
     fi
     
     rm -f "$temp_results"
     
-    [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] All searches complete" >&2
+    [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Search complete" >&2
     echo "DONE" > "$fifo"
     return 0
 }
