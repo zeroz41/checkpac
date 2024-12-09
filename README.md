@@ -138,6 +138,11 @@ checkpac paru yay aurutils -r --exclude-arch
 - Paginated API searches
 - Multiple package search support
 
+#### Processing
+- Support for sub processes and process management for speed
+- Allows caching for packages to process and print more efficiently/simulataneously
+- Process interruption. Always be able to kill the program with Ctrl^C or interrupts
+
 ## About
 
 Created by zeroz/tj
