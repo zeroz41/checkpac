@@ -304,59 +304,47 @@ yay_search() {
     
     local batch_size=100
     local max_results=200
-    local term_count=${#search_terms[@]}
+    local processed_pkgs=()
     
     [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Started parallel search for terms: ${search_terms[*]}" >&2
     
-    # Process a single term and write results directly to FIFO
-    process_term() {
-        local search_term="$1"
-        local offset=0
+    # Create a temporary file to store all results before processing
+    local temp_results=$(mktemp)
+    
+    for term in "${search_terms[@]}"; do
+        [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER:$term] Starting search" >&2
         
-        [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER:$search_term] Starting search" >&2
-        
-        local search_url="https://aur.archlinux.org/rpc/v5/search?arg=${search_term}"
+        local search_url="https://aur.archlinux.org/rpc/v5/search?arg=${term}"
         search_url="${search_url}&by=$([ "$search_desc" = true ] && echo "name-desc" || echo "name")"
         search_url="${search_url}&type=search"
         
         local response=$(curl -s "$search_url")
-        local total_results=$(echo "$response" | jq -r '.resultcount // 0')
+        local current_results=$(echo "$response" | jq -r '.resultcount // 0')
         
-        [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER:$search_term] Found $total_results results" >&2
+        [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER:$term] Found $current_results results" >&2
         
-        if [ "$total_results" -eq 0 ] || [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
-            return 0
+        if [ "$current_results" -gt 0 ] && [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+            # Append results to temp file
+            echo "$response" | jq -r '.results[] | select(.Name != null and .Version != null) | 
+                "\(.Name)\t\(.Version)\t\(.Description)"' >> "$temp_results"
         fi
         
-        # Process batches
-        while [ $offset -lt $total_results ] && [ "$CLEANUP_IN_PROGRESS" = "0" ]; do
-            if [ -n "$response" ]; then
-                echo "$response" | jq -r '.results[] | select(.Name != null and .Version != null) | 
-                    "PKG:aur/\(.Name) \(.Version)\nDESC:\(.Description)\nEND"
-                ' > "$fifo"
-            fi
-            
-            offset=$((offset + batch_size))
-            
-            if [ $offset -lt $total_results ]; then
-                response=$(curl -s "${search_url}&offset=$offset")
-            fi
-            
-            # Small delay to prevent overwhelming the system
-            sleep 0.05
-        done
-        
-        [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER:$search_term] Search complete" >&2
-    }
-    
-    # Run searches in parallel with a small delay between starts
-    for term in "${search_terms[@]}"; do
-        process_term "$term" &
-        sleep 0.1  # Small delay between starting searches
+        # Small delay between terms to prevent rate limiting
+        sleep 0.05
     done
     
-    # Wait for all searches to complete
-    wait
+    # Sort and remove duplicates based on package name (first field)
+    if [ -f "$temp_results" ] && [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+        [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] Processing combined results" >&2
+        
+        sort -u -k1,1 "$temp_results" | while IFS=$'\t' read -r name version desc; do
+            if [ "$CLEANUP_IN_PROGRESS" = "0" ]; then
+                echo "PKG:aur/$name $version"$'\n'"DESC:$desc"$'\n'"END" > "$fifo"
+            fi
+        done
+    fi
+    
+    rm -f "$temp_results"
     
     [ "$DEBUG_AUR" -eq 1 ] && echo "[FETCHER] All searches complete" >&2
     echo "DONE" > "$fifo"
@@ -368,10 +356,11 @@ process_aur_results() {
     shift
     local search_terms=("$@")
     local processed_count=0
+    local processed_pkgs=()
     
     [ "$DEBUG_AUR" -eq 1 ] && echo "[PROCESSOR] Starting to process results" >&2
     
-    while IFS= read -r -t 30 line || [ -n "$line" ]; do  # Add 30-second timeout
+    while IFS= read -r -t 30 line || [ -n "$line" ]; do
         if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
             [ "$DEBUG_AUR" -eq 1 ] && echo "[PROCESSOR] Breaking due to cleanup" >&2
             break
@@ -399,7 +388,9 @@ process_aur_results() {
                 continue
             fi
             
-            if [ -z "${found_packages[$pkg]}" ]; then
+            # Check if we've already processed this package
+            if [[ ! " ${processed_pkgs[@]} " =~ " ${pkg} " ]] && [ -z "${found_packages[$pkg]}" ]; then
+                processed_pkgs+=("$pkg")
                 found_packages[$pkg]=1
                 processed_count=$((processed_count + 1))
                 
