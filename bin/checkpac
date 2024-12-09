@@ -698,14 +698,30 @@ pkgcheck() {
                 fi
             done
         else
-            for term in "${search_terms[@]}"; do
-                if [ -n "$installed_pkgs" ]; then
-                    installed_pkgs="$installed_pkgs"$'\n'"$(pacman -Q | grep -i "$term")"
-                else
-                    installed_pkgs="$(pacman -Q | grep -i "$term")"
-                fi
-            done
+            if [ "$search_desc" = true ]; then
+                # Use expac to get both name and description, then search through both
+                local all_packages=$(expac -Q '%n,%v,%d')
+                for term in "${search_terms[@]}"; do
+                    if [ -n "$installed_pkgs" ]; then
+                        installed_pkgs="$installed_pkgs"$'\n'"$(echo "$all_packages" | awk -F, -v term="$term" 'tolower($1) ~ tolower(term) || tolower($3) ~ tolower(term) {print $1,$2}')"
+                    else
+                        installed_pkgs="$(echo "$all_packages" | awk -F, -v term="$term" 'tolower($1) ~ tolower(term) || tolower($3) ~ tolower(term) {print $1,$2}')"
+                    fi
+                done
+            else
+                for term in "${search_terms[@]}"; do
+                    if [ -n "$installed_pkgs" ]; then
+                        installed_pkgs="$installed_pkgs"$'\n'"$(pacman -Q | grep -i "$term")"
+                    else
+                        installed_pkgs="$(pacman -Q | grep -i "$term")"
+                    fi
+                done
+            fi
         fi
+
+        # Remove empty lines and duplicates
+        installed_pkgs=$(echo "$installed_pkgs" | sed '/^$/d' | sort -u)
+
 
         # Process installed packages with better interrupt handling
         while IFS= read -r line; do
