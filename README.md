@@ -2,7 +2,7 @@
 
 A fast and simple package checking tool for Arch Linux. Quickly find installed packages, check versions, and discover available packages using simple keyword searches. Get a clean, colorful overview of package status, update availability, and repository sources - all in one place. Perfect for when you need to quickly check what's on your system or find new packages to install.
 
-![image](https://github.com/user-attachments/assets/6982e19e-23dc-43bb-80ad-30f42e4ec628)
+![image](https://github.com/user-attachments/assets/03d62d26-b067-43bd-b07a-20ba9aed2a2d)
 
 
 ## Features
@@ -93,7 +93,7 @@ checkpac -h
 
 ### Advanced Examples
 
-![image](https://github.com/user-attachments/assets/c2ca724d-bd1e-42ed-8ca8-87b5a2fd9495)
+![image](https://github.com/user-attachments/assets/6f2f7af3-3c78-4def-a6fc-69b26f5b1249)
 
 
 Search through descriptions and remote packages for multiple terms:
@@ -137,6 +137,11 @@ checkpac paru yay aurutils -r --exclude-arch
 - Exact matching option
 - Paginated API searches
 - Multiple package search support
+
+#### Processing
+- Support for sub processes and process management for speed
+- Allows caching for packages to process and print more efficiently/simulataneously
+- Process interruption. Always be able to kill the program with Ctrl^C or interrupts
 
 ## About
 
