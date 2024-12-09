@@ -896,9 +896,9 @@ pkgcheck() {
             elif [ "$search_desc" = true ]; then
                 for term in "${search_terms[@]}"; do
                     if [ -n "$remote_pkgs" ]; then
-                        remote_pkgs="$remote_pkgs"$'\n'"$(expac -S '%n\t%v\t%r\t%d' | grep -i "$term")"
+                        remote_pkgs="$remote_pkgs"$'\n'"$(expac -S '%r/%n\t%v\t%d' | awk -v term="$term" 'tolower($0) ~ tolower(term)')"
                     else
-                        remote_pkgs="$(expac -S '%n\t%v\t%r\t%d' | grep -i "$term")"
+                        remote_pkgs="$(expac -S '%r/%n\t%v\t%d' | awk -v term="$term" 'tolower($0) ~ tolower(term)')"
                     fi
                 done
             else
@@ -921,7 +921,7 @@ pkgcheck() {
                 while IFS= read -r line; do
                     local pkg=""
                     if [ "$search_desc" = true ]; then
-                        pkg=$(echo "$line" | cut -f1)
+                        pkg=$(echo "$line" | cut -f1 | cut -d'/' -f2)  # Extract package name from repo/name format
                     else
                         pkg=$(echo "$line" | awk '{print $2}')
                     fi
