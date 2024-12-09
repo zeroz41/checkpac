@@ -409,9 +409,6 @@ process_aur_results() {
     local processed_count=0
     local done_count=0
     local expected_done_count=${#search_terms[@]}
-    local current_pkg=""
-    local current_version=""
-    local current_desc=""
     local last_read_time=$SECONDS
     local timeout=15
     
@@ -420,6 +417,10 @@ process_aur_results() {
     
     # Open FIFO for reading
     exec 3<"$fifo"
+    
+    local pkg=""
+    local version=""
+    local desc=""
     
     # Use read with timeout to prevent hanging
     while true; do
@@ -445,60 +446,56 @@ process_aur_results() {
             fi
             
             if [[ "$line" =~ ^PKG: ]]; then
-                # Start new package block
-                current_pkg=""
-                current_version=""
-                current_desc=""
-                
                 local pkg_line=$(echo "$line" | sed 's/^PKG://')
-                current_pkg=$(echo "$pkg_line" | cut -d'/' -f2 | cut -d' ' -f1)
-                current_version=$(echo "$pkg_line" | cut -d' ' -f2)
+                pkg=$(echo "$pkg_line" | cut -d'/' -f2 | cut -d' ' -f1)
+                version=$(echo "$pkg_line" | cut -d' ' -f2)
                 
                 # Skip if already processed
-                if [ -n "${found_packages[$current_pkg]}" ]; then
-                    current_pkg=""
+                if [ -n "${found_packages[$pkg]}" ]; then
+                    pkg=""
                     continue
                 fi
                 
-                found_packages[$current_pkg]=1
+                found_packages[$pkg]=1
                 processed_count=$((processed_count + 1))
                 
-            elif [[ "$line" =~ ^DESC: ]] && [ -n "$current_pkg" ]; then
-                current_desc=$(echo "$line" | sed 's/^DESC://')
-                
-            elif [[ "$line" = "END" ]] && [ -n "$current_pkg" ]; then
-                # Output complete package block
                 {
                     flock -x 200
-                    # Package name and version
-                    echo -e "${COL_RED}$X_MARK $current_pkg${COL_RESET} ${COL_CYAN}(v$current_version)${COL_RESET}"
-                    
-                    # Description if we have one
-                    if [ -n "$current_desc" ]; then
+                    echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$version)${COL_RESET}"
+                } 200>/tmp/pacheck.lock &
+                
+            elif [[ "$line" =~ ^DESC: ]] && [ -n "$pkg" ]; then
+                desc=$(echo "$line" | sed 's/^DESC://')
+                if [ -n "$desc" ]; then
+                    {
+                        flock -x 200
                         if [ "$search_desc" = true ]; then
-                            local highlighted_desc="$current_desc"
+                            local highlighted_desc="$desc"
                             for term in "${search_terms[@]}"; do
                                 highlighted_desc=$(echo "$highlighted_desc" | sed "s/\($term\)/\\${COL_HIGHLIGHT}\1\\${COL_RESET}\\${COL_DIM}/gi")
                             done
                             printf "%b" "${COL_DIM}$highlighted_desc${COL_RESET}\n"
                         else
-                            printf "%b" "${COL_DIM}$current_desc${COL_RESET}\n"
+                            printf "%b" "${COL_DIM}$desc${COL_RESET}\n"
                         fi
-                    fi
-                    
-                    # Repository type
-                    if [[ "$current_pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
+                    } 200>/tmp/pacheck.lock &
+                fi
+                
+            elif [[ "$line" = "END" ]] && [ -n "$pkg" ]; then
+                {
+                    flock -x 200
+                    if [[ "$pkg" =~ -(git|svn|hg|bzr|cvs)$ ]]; then
                         local pkg_type="${COL_CYAN}devel${COL_RESET}"
                     else
                         local pkg_type="${COL_RED}aur${COL_RESET}"
                     fi
                     echo -e "${COL_YELLOW}└─ Available in AUR [${pkg_type}]${COL_RESET}\n"
-                } 200>/tmp/pacheck.lock
+                } 200>/tmp/pacheck.lock &
                 
-                # Clear package block after output
-                current_pkg=""
-                current_version=""
-                current_desc=""
+                # Clear for next package
+                pkg=""
+                version=""
+                desc=""
             fi
         else
             # Check if we've exceeded our timeout
@@ -515,6 +512,9 @@ process_aur_results() {
             fi
         fi
     done
+    
+    # Wait for any remaining background processes
+    wait
     
     # Close file descriptor
     exec 3<&-
