@@ -113,32 +113,50 @@ fetch_arch_data() {
     local json_response
     local api_url="https://archlinux.org/packages/search/json/"
     
-    # Build the search query
-    local query=""
+    # Create separate queries and combine results
+    local all_results=""
+    
     for term in "${search_terms[@]}"; do
-        query="${query}q=${term}&"
+        [ "$DEBUG_ARCH" -eq 1 ] && echo "DEBUG: Fetching data for term: $term" >&2
+        
+        # Fetch data for each term separately
+        local term_response
+        term_response=$(curl -G --silent --retry 3 --max-time 10 \
+            "$api_url" \
+            --data-urlencode "q=$term")
+        
+        if [ -n "$term_response" ] && jq -e . >/dev/null 2>&1 <<<"$term_response"; then
+            if [ -z "$all_results" ]; then
+                all_results="$term_response"
+            else
+                # Combine results arrays, ensuring unique entries by pkgname
+                all_results=$(jq -s '
+                    .[0].results + .[1].results | 
+                    unique_by(.pkgname) | 
+                    {results: .}
+                ' \
+                    <(echo "$all_results") \
+                    <(echo "$term_response"))
+            fi
+        else
+            echo -e "${COL_RED}Failed to fetch package data for term: $term${COL_RESET}" >&2
+        fi
     done
-    query="${query%&}"  # Remove trailing &
     
-    # Debug: Print the API URL
-    [ "$DEBUG_ARCH" -eq 1 ] && echo "DEBUG: API URL: $api_url?$query" >&2
-    
-    # Fetch data from Arch API
-    json_response=$(curl -G --silent --retry 3 --max-time 10 \
-        "$api_url" \
-        --data-urlencode "$query")
-    
-    if [ -z "$json_response" ] || ! jq -e . >/dev/null 2>&1 <<<"$json_response"; then
-        echo -e "${COL_RED}Failed to fetch package data from Arch API${COL_RESET}" >&2
+    if [ -z "$all_results" ]; then
+        echo -e "${COL_RED}Failed to fetch any package data${COL_RESET}" >&2
         return 1
     fi
     
-    # Debug: Show raw response for matching packages
-    [ "$DEBUG_ARCH" -eq 1 ] && echo "DEBUG: API Response for proj:" >&2
-    [ "$DEBUG_ARCH" -eq 1 ] && echo "$json_response" | jq -r '.results[] | select(.pkgname == "proj")' >&2
+    # Debug: Show complete package data
+    [ "$DEBUG_ARCH" -eq 1 ] && echo "DEBUG: Complete package data:" >&2
+    [ "$DEBUG_ARCH" -eq 1 ] && echo "$all_results" | jq -r '.results[] | "\(.pkgname): \(.repo)/\(.pkgver)-\(.pkgrel)"' >&2
     
-    # Parse JSON response into our global arrays
+    # Parse combined JSON response into our global arrays
     while IFS=$'\t' read -r name version epoch pkgrel repo arch pkgdesc; do
+        # Skip empty or invalid entries
+        [ -z "$name" ] || [ -z "$version" ] || [ -z "$repo" ] && continue
+        
         # Construct full version string with epoch and release
         local full_version
         if [ "$epoch" != "0" ]; then
@@ -147,15 +165,17 @@ fetch_arch_data() {
             full_version="$version-$pkgrel"
         fi
         
-        [ "$DEBUG_ARCH" -eq 1 ] && echo "DEBUG: Setting version for $name: $full_version" >&2
+        [ "$DEBUG_ARCH" -eq 1 ] && echo "DEBUG: Setting version for $name: $full_version (repo: $repo)" >&2
         
         official_versions[$name]=$full_version
         official_repos[$name]=$repo
         official_descriptions[$name]=$pkgdesc
-    done < <(echo "$json_response" | jq -r '.results[] | 
+    done < <(echo "$all_results" | jq -r '
+        .results[] | 
         select(.repo != "testing" and .repo != "community-testing") |
         [.pkgname, .pkgver, .epoch, .pkgrel, .repo, .arch, .pkgdesc] | 
-        @tsv')
+        @tsv
+    ')
 }
 
 # Cache package data using expac
