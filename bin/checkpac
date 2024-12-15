@@ -9,7 +9,7 @@
 
 #DEBUG FLAGS
 DEBUG_AUR=0
-DEBUG_ARCH=0
+DEBUG_ARCH=1
 
 
 # Add process group management
@@ -120,25 +120,41 @@ fetch_arch_data() {
     done
     query="${query%&}"  # Remove trailing &
     
+    # Debug: Print the API URL
+    [ "$DEBUG_ARCH" -eq 1 ] && echo "DEBUG: API URL: $api_url?$query" >&2
+    
     # Fetch data from Arch API
     json_response=$(curl -G --silent --retry 3 --max-time 10 \
         "$api_url" \
-        --data-urlencode "$query" \
-        --data-urlencode "limit=999")
+        --data-urlencode "$query")
     
     if [ -z "$json_response" ] || ! jq -e . >/dev/null 2>&1 <<<"$json_response"; then
         echo -e "${COL_RED}Failed to fetch package data from Arch API${COL_RESET}" >&2
         return 1
     fi
     
+    # Debug: Show raw response for matching packages
+    [ "$DEBUG_ARCH" -eq 1 ] && echo "DEBUG: API Response for proj:" >&2
+    [ "$DEBUG_ARCH" -eq 1 ] && echo "$json_response" | jq -r '.results[] | select(.pkgname == "proj")' >&2
+    
     # Parse JSON response into our global arrays
-    while IFS=$'\t' read -r name version repo arch pkgdesc; do
-        official_versions[$name]=$version
+    while IFS=$'\t' read -r name version epoch pkgrel repo arch pkgdesc; do
+        # Construct full version string with epoch and release
+        local full_version
+        if [ "$epoch" != "0" ]; then
+            full_version="$epoch:$version-$pkgrel"
+        else
+            full_version="$version-$pkgrel"
+        fi
+        
+        [ "$DEBUG_ARCH" -eq 1 ] && echo "DEBUG: Setting version for $name: $full_version" >&2
+        
+        official_versions[$name]=$full_version
         official_repos[$name]=$repo
         official_descriptions[$name]=$pkgdesc
     done < <(echo "$json_response" | jq -r '.results[] | 
         select(.repo != "testing" and .repo != "community-testing") |
-        [.pkgname, .pkgver + "-" + .pkgrel, .repo, .arch, .pkgdesc] | 
+        [.pkgname, .pkgver, .epoch, .pkgrel, .repo, .arch, .pkgdesc] | 
         @tsv')
 }
 
@@ -175,6 +191,10 @@ process_installed_pkgs() {
     local repo="${official_repos[$pkg]}"
     local description="${official_descriptions[$pkg]}"
     local repo_type=$(get_repo_type "$pkg" "$repo")
+
+    [ "$DEBUG_ARCH" -eq 1 ] && echo "DEBUG: Processing $pkg" >&2
+    [ "$DEBUG_ARCH" -eq 1 ] && echo "DEBUG: Current version: $current_version" >&2
+    [ "$DEBUG_ARCH" -eq 1 ] && echo "DEBUG: Remote version: $remote_version" >&2
 
     # Early exit if cleanup is in progress
     if [ "$CLEANUP_IN_PROGRESS" = "1" ]; then
