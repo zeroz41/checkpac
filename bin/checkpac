@@ -108,6 +108,40 @@ get_repo_type() {
     esac
 }
 
+fetch_arch_data() {
+    local search_terms=("$@")
+    local json_response
+    local api_url="https://archlinux.org/packages/search/json/"
+    
+    # Build the search query
+    local query=""
+    for term in "${search_terms[@]}"; do
+        query="${query}q=${term}&"
+    done
+    query="${query%&}"  # Remove trailing &
+    
+    # Fetch data from Arch API
+    json_response=$(curl -G --silent --retry 3 --max-time 10 \
+        "$api_url" \
+        --data-urlencode "$query" \
+        --data-urlencode "limit=999")
+    
+    if [ -z "$json_response" ] || ! jq -e . >/dev/null 2>&1 <<<"$json_response"; then
+        echo -e "${COL_RED}Failed to fetch package data from Arch API${COL_RESET}" >&2
+        return 1
+    fi
+    
+    # Parse JSON response into our global arrays
+    while IFS=$'\t' read -r name version repo arch pkgdesc; do
+        official_versions[$name]=$version
+        official_repos[$name]=$repo
+        official_descriptions[$name]=$pkgdesc
+    done < <(echo "$json_response" | jq -r '.results[] | 
+        select(.repo != "testing" and .repo != "community-testing") |
+        [.pkgname, .pkgver + "-" + .pkgrel, .repo, .arch, .pkgdesc] | 
+        @tsv')
+}
+
 # Cache package data using expac
 cache_package_data() {
     # Get all installed package info
@@ -116,28 +150,21 @@ cache_package_data() {
         pkg_versions[$pkg]=$version
     done < <(pacman -Q)
 
-    # Debug: Show what expac is returning
-    #echo "DEBUG: First few lines of expac output:"
-    #expac -S '%n\t%v\t%r\t%d' | head -n 3 >&2
-
-    # Cache official repo data using expac
+    # Initialize global arrays
     declare -gA official_versions
     declare -gA official_repos
     declare -gA official_descriptions
 
-    while IFS=$'\t' read -r name version repo description; do
-        # Debug: Show what we're parsing for a few packages
-        #[[ $name == lib32-* ]] && echo "DEBUG: Parsing $name | $version | $repo" >&2
-
-        official_versions[$name]=$version
-        official_repos[$name]=$repo
-        official_descriptions[$name]=$description
-    done < <(expac -S '%n\t%v\t%r\t%d')
-
-    # debug only echos
-    #echo "DEBUG: Cached data for lib32-libtheora:"
-    #echo "Version: ${official_versions[lib32-libtheora]}"
-    #echo "Repo: ${official_repos[lib32-libtheora]}"
+    # Fetch remote package data from Arch API
+    if ! fetch_arch_data "${search_terms[@]}"; then
+        echo -e "${COL_YELLOW}Warning: Using local sync database as fallback${COL_RESET}" >&2
+        # Fallback to using local sync db if API fails
+        while IFS=$'\t' read -r name version repo description; do
+            official_versions[$name]=$version
+            official_repos[$name]=$repo
+            official_descriptions[$name]=$description
+        done < <(expac -S '%n\t%v\t%r\t%d')
+    fi
 }
 
 # arch official installed
