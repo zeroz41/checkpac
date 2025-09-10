@@ -171,38 +171,97 @@ display_remote_pkg() {
 }
 
 # Search AUR via RPC (much faster)
+# Search AUR via RPC - handles multiple search terms with OR logic
+#!/bin/bash
+
+# Search AUR via RPC - handles multiple search terms with OR logic
 search_aur_remote() {
     local found_any=false
-    local query=""
+    declare -A seen_packages  # Use associative array for faster lookups
     
-    # Build query string
-    for term in "${search_terms[@]}"; do
-        [ -n "$query" ] && query="$query "
-        query="$query$term"
-    done
+    # Debug mode - uncomment to see API calls
+    # local debug=true
+    local debug=false
     
-    # Single API call for search
-    local by_field="name"
-    [ "$search_desc" = true ] && by_field="name-desc"
-    
-    local url="https://aur.archlinux.org/rpc/v5/search/$(echo -n "$query" | jq -sRr @uri)?by=$by_field"
-    local response=$(curl -s "$url" 2>/dev/null)
-    
-    if [ -n "$response" ]; then
-        while IFS=$'\t' read -r name ver desc; do
-            # Skip if already installed
-            [ -n "${installed_versions[$name]}" ] && continue
+    # For exact match mode, search each term separately
+    if [ "$exact_match" = true ]; then
+        for term in "${search_terms[@]}"; do
+            local url="https://aur.archlinux.org/rpc/v5/search/$(echo -n "$term" | jq -sRr @uri)?by=name"
+            [ "$debug" = true ] && echo "Debug: Searching AUR (exact) for: $term" >&2
+            [ "$debug" = true ] && echo "Debug: URL: $url" >&2
             
-            echo -e "${COL_RED}$X_MARK $name${COL_RESET} ${COL_CYAN}(v$ver)${COL_RESET}"
-            [ -n "$desc" ] && echo -e "${COL_DIM}$desc${COL_RESET}"
+            local response=$(curl -s "$url" 2>/dev/null)
+            [ "$debug" = true ] && echo "Debug: Response length: ${#response}" >&2
             
-            local pkg_type="aur"
-            [[ "$name" =~ -(git|svn|hg|bzr)$ ]] && pkg_type="devel"
-            echo -e "${COL_YELLOW}└─ Available in AUR [${COL_CYAN}$pkg_type${COL_RESET}]"
-            echo
+            if [ -n "$response" ]; then
+                while IFS=$'\t' read -r name ver desc; do
+                    # For exact match, skip if name doesn't exactly match (case-insensitive)
+                    if [[ "${name,,}" != "${term,,}" ]]; then
+                        continue
+                    fi
+                    
+                    # Skip if already installed
+                    [ -n "${installed_versions[$name]}" ] && continue
+                    
+                    # Skip if already shown
+                    [ -n "${seen_packages[$name]}" ] && continue
+                    seen_packages[$name]=1
+                    
+                    echo -e "${COL_RED}$X_MARK $name${COL_RESET} ${COL_CYAN}(v$ver)${COL_RESET}"
+                    [ -n "$desc" ] && echo -e "${COL_DIM}$desc${COL_RESET}"
+                    
+                    local pkg_type="aur"
+                    [[ "$name" =~ -(git|svn|hg|bzr)$ ]] && pkg_type="devel"
+                    echo -e "${COL_YELLOW}└─ Available in AUR [${COL_CYAN}$pkg_type${COL_RESET}]"
+                    echo
+                    
+                    found_any=true
+                done < <(echo "$response" | jq -r '.results[] | "\(.Name)\t\(.Version)\t\(.Description // "")"' 2>/dev/null)
+            fi
+        done
+    else
+        # For non-exact match, search each term and combine results
+        for term in "${search_terms[@]}"; do
+            local by_field="name"
+            [ "$search_desc" = true ] && by_field="name-desc"
             
-            found_any=true
-        done < <(echo "$response" | jq -r '.results[] | "\(.Name)\t\(.Version)\t\(.Description)"' 2>/dev/null)
+            local url="https://aur.archlinux.org/rpc/v5/search/$(echo -n "$term" | jq -sRr @uri)?by=$by_field"
+            [ "$debug" = true ] && echo "Debug: Searching AUR for: $term (field: $by_field)" >&2
+            [ "$debug" = true ] && echo "Debug: URL: $url" >&2
+            
+            local response=$(curl -s "$url" 2>/dev/null)
+            [ "$debug" = true ] && echo "Debug: Response length: ${#response}" >&2
+            
+            if [ -n "$response" ]; then
+                # Check if we got valid JSON with results
+                local result_count=$(echo "$response" | jq -r '.resultcount // 0' 2>/dev/null)
+                [ "$debug" = true ] && echo "Debug: Result count: $result_count" >&2
+                
+                if [ "$result_count" != "0" ]; then
+                    while IFS=$'\t' read -r name ver desc; do
+                        # Skip if empty name
+                        [ -z "$name" ] && continue
+                        
+                        # Skip if already installed
+                        [ -n "${installed_versions[$name]}" ] && continue
+                        
+                        # Skip if we've already shown this package
+                        [ -n "${seen_packages[$name]}" ] && continue
+                        seen_packages[$name]=1
+                        
+                        echo -e "${COL_RED}$X_MARK $name${COL_RESET} ${COL_CYAN}(v$ver)${COL_RESET}"
+                        [ -n "$desc" ] && echo -e "${COL_DIM}$desc${COL_RESET}"
+                        
+                        local pkg_type="aur"
+                        [[ "$name" =~ -(git|svn|hg|bzr)$ ]] && pkg_type="devel"
+                        echo -e "${COL_YELLOW}└─ Available in AUR [${COL_CYAN}$pkg_type${COL_RESET}]"
+                        echo
+                        
+                        found_any=true
+                    done < <(echo "$response" | jq -r '.results[]? | "\(.Name)\t\(.Version)\t\(.Description // "")"' 2>/dev/null)
+                fi
+            fi
+        done
     fi
     
     [ "$found_any" = false ] && echo -e "${COL_RED}$X_MARK No packages found in AUR${COL_RESET}\n"
