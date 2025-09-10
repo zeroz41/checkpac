@@ -136,7 +136,17 @@ display_installed_pkg() {
     echo
 }
 
-# Display AUR installed package
+fetch_aur_version() {
+    local pkg=$1
+    local url="https://aur.archlinux.org/rpc/v5/info?arg[]=$(echo -n "$pkg" | jq -sRr @uri)"
+    local response=$(curl -s "$url" 2>/dev/null)
+    
+    if [ -n "$response" ]; then
+        echo "$response" | jq -r '.results[0].Version // ""' 2>/dev/null
+    fi
+}
+
+# Replace the existing display_aur_pkg function with this updated version
 display_aur_pkg() {
     local pkg=$1
     local ver="${aur_installed[$pkg]}"
@@ -153,7 +163,23 @@ display_aur_pkg() {
     local pkg_type="aur"
     [[ "$pkg" =~ -(git|svn|hg|bzr)$ ]] && pkg_type="devel"
     
-    echo -e "${COL_YELLOW}└─ Source: AUR [${COL_CYAN}$pkg_type${COL_RESET}]"
+    echo -ne "${COL_YELLOW}└─ Source: AUR [${COL_CYAN}$pkg_type${COL_RESET}]"
+    
+    # Check for updates (skip for VCS packages as they're always "latest")
+    if [[ ! "$pkg" =~ -(git|svn|hg|bzr)$ ]]; then
+        local remote_ver=$(fetch_aur_version "$pkg")
+        
+        if [ -z "$remote_ver" ]; then
+            echo -e " ${COL_YELLOW}$WARNING Unable to check${COL_RESET}"
+        elif version_differs "$ver" "$remote_ver"; then
+            echo -e " ${COL_YELLOW}$UP_ARROW Update: v$ver → v$remote_ver${COL_RESET}"
+        else
+            echo -e " ${COL_GREEN}$CHECK_MARK Up to date${COL_RESET}"
+        fi
+    else
+        echo -e " ${COL_DIM}(VCS package - always latest)${COL_RESET}"
+    fi
+    
     echo
 }
 
