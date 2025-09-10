@@ -182,6 +182,7 @@ display_aur_pkg() {
     
     echo
 }
+#
 
 # Display remote package
 display_remote_pkg() {
