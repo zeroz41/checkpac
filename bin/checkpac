@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Optimized pacheck - Fast parallel package checker for Arch Linux
-# Made by zeroz/tj - Optimized version
+# Made by zeroz/tj - Optimized version with fast AUR batch checking
 
 # Dependencies: expac, curl, jq
 # Optional: pacman-contrib (for paccache)
@@ -42,6 +42,7 @@ declare -gA official_versions
 declare -gA official_repos
 declare -gA official_descriptions
 declare -gA aur_installed
+declare -gA aur_remote_versions  # Cache for AUR remote versions
 
 # Cleanup handler
 cleanup() {
@@ -136,17 +137,41 @@ display_installed_pkg() {
     echo
 }
 
-fetch_aur_version() {
-    local pkg=$1
-    local url="https://aur.archlinux.org/rpc/v5/info?arg[]=$(echo -n "$pkg" | jq -sRr @uri)"
+# Batch fetch all AUR versions at once
+fetch_all_aur_versions() {
+    local -a packages=("$@")
+    [ ${#packages[@]} -eq 0 ] && return
+    
+    # Build URL with all packages (excluding VCS packages)
+    local url="https://aur.archlinux.org/rpc/v5/info"
+    local first=true
+    
+    for pkg in "${packages[@]}"; do
+        # Skip VCS packages as they're always "latest"
+        [[ "$pkg" =~ -(git|svn|hg|bzr)$ ]] && continue
+        
+        if [ "$first" = true ]; then
+            url="${url}?arg[]=$(echo -n "$pkg" | jq -sRr @uri)"
+            first=false
+        else
+            url="${url}&arg[]=$(echo -n "$pkg" | jq -sRr @uri)"
+        fi
+    done
+    
+    # If all packages were VCS, return
+    [ "$first" = true ] && return
+    
+    # Fetch all versions in one request
     local response=$(curl -s "$url" 2>/dev/null)
     
     if [ -n "$response" ]; then
-        echo "$response" | jq -r '.results[0].Version // ""' 2>/dev/null
+        while IFS=$'\t' read -r name version; do
+            [ -n "$name" ] && aur_remote_versions[$name]=$version
+        done < <(echo "$response" | jq -r '.results[] | "\(.Name)\t\(.Version)"' 2>/dev/null)
     fi
 }
 
-# Replace the existing display_aur_pkg function with this updated version
+# Display AUR package (now uses pre-fetched versions)
 display_aur_pkg() {
     local pkg=$1
     local ver="${aur_installed[$pkg]}"
@@ -167,7 +192,7 @@ display_aur_pkg() {
     
     # Check for updates (skip for VCS packages as they're always "latest")
     if [[ ! "$pkg" =~ -(git|svn|hg|bzr)$ ]]; then
-        local remote_ver=$(fetch_aur_version "$pkg")
+        local remote_ver="${aur_remote_versions[$pkg]}"
         
         if [ -z "$remote_ver" ]; then
             echo -e " ${COL_YELLOW}$WARNING Unable to check${COL_RESET}"
@@ -182,7 +207,6 @@ display_aur_pkg() {
     
     echo
 }
-#
 
 # Display remote package
 display_remote_pkg() {
@@ -196,10 +220,6 @@ display_remote_pkg() {
     echo -e "${COL_BLUE}└─ Available in [$(get_repo_color "$repo")]${COL_RESET}"
     echo
 }
-
-# Search AUR via RPC (much faster)
-# Search AUR via RPC - handles multiple search terms with OR logic
-#!/bin/bash
 
 # Search AUR via RPC - handles multiple search terms with OR logic
 search_aur_remote() {
@@ -401,7 +421,9 @@ main() {
     # Process installed AUR packages
     if [ "$exclude_aur" = false ]; then
         local found_aur=false
+        declare -a matching_aur_packages=()
         
+        # First, collect all matching AUR packages
         for pkg in "${!aur_installed[@]}"; do
             # Get description for matching
             local desc=""
@@ -410,16 +432,22 @@ main() {
             fi
             
             matches_search "$pkg" "$desc" || continue
-            
-            if [ "$found_aur" = false ]; then
-                echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
-                echo -e "${COL_BOLD}${COL_YELLOW}AUR Installed:${COL_RESET}"
-                echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
-                found_aur=true
-            fi
-            
-            display_aur_pkg "$pkg"
+            matching_aur_packages+=("$pkg")
         done
+        
+        # Batch fetch all AUR versions at once
+        if [ ${#matching_aur_packages[@]} -gt 0 ]; then
+            fetch_all_aur_versions "${matching_aur_packages[@]}"
+            
+            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+            echo -e "${COL_BOLD}${COL_YELLOW}AUR Installed:${COL_RESET}"
+            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+            
+            # Now display all matching packages
+            for pkg in "${matching_aur_packages[@]}"; do
+                display_aur_pkg "$pkg"
+            done
+        fi
     fi
     
     # Process remote packages if requested
