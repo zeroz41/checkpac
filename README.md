@@ -16,6 +16,25 @@ A fast and simple package checking tool for Arch Linux. Quickly find installed p
 
 ## Installation
 
+### From AUR (Recommended)
+
+checkpac is available on the [AUR](https://aur.archlinux.org/packages/checkpac). Install it using your favorite AUR helper:
+
+```bash
+# Using yay
+yay -S checkpac
+
+# Using paru
+paru -S checkpac
+
+# Or manually with makepkg
+git clone https://aur.archlinux.org/checkpac.git
+cd checkpac
+makepkg -si
+```
+
+### Manual Installation
+
 Clone the repository:
 ```bash
 git clone https://github.com/zeroz/checkpac.git
