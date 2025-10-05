@@ -34,6 +34,7 @@ declare -g exclude_aur=false
 declare -g exclude_arch=false
 declare -g exact_match=false
 declare -g check_remote=false
+declare -g simple_mode=false
 declare -ga search_terms=()
 
 # Data caches - populated once
@@ -116,6 +117,13 @@ matches_search() {
 # Display installed package
 display_installed_pkg() {
     local pkg=$1
+    
+    # Simple mode - just the name
+    if [ "$simple_mode" = true ]; then
+        echo "$pkg"
+        return
+    fi
+    
     local current_ver="${installed_versions[$pkg]}"
     local remote_ver="${official_versions[$pkg]}"
     local repo="${official_repos[$pkg]}"
@@ -174,6 +182,13 @@ fetch_all_aur_versions() {
 # Display AUR package (now uses pre-fetched versions)
 display_aur_pkg() {
     local pkg=$1
+    
+    # Simple mode - just the name
+    if [ "$simple_mode" = true ]; then
+        echo "$pkg"
+        return
+    fi
+    
     local ver="${aur_installed[$pkg]}"
     local desc=""
     
@@ -211,6 +226,13 @@ display_aur_pkg() {
 # Display remote package
 display_remote_pkg() {
     local pkg=$1
+    
+    # Simple mode - just the name
+    if [ "$simple_mode" = true ]; then
+        echo "$pkg"
+        return
+    fi
+    
     local ver="${official_versions[$pkg]}"
     local repo="${official_repos[$pkg]}"
     local desc="${official_descriptions[$pkg]}"
@@ -254,13 +276,18 @@ search_aur_remote() {
                     [ -n "${seen_packages[$name]}" ] && continue
                     seen_packages[$name]=1
                     
-                    echo -e "${COL_RED}$X_MARK $name${COL_RESET} ${COL_CYAN}(v$ver)${COL_RESET}"
-                    [ -n "$desc" ] && echo -e "${COL_DIM}$desc${COL_RESET}"
-                    
-                    local pkg_type="aur"
-                    [[ "$name" =~ -(git|svn|hg|bzr)$ ]] && pkg_type="devel"
-                    echo -e "${COL_YELLOW}└─ Available in AUR [${COL_CYAN}$pkg_type${COL_RESET}]"
-                    echo
+                    # Simple mode - just the name
+                    if [ "$simple_mode" = true ]; then
+                        echo "$name"
+                    else
+                        echo -e "${COL_RED}$X_MARK $name${COL_RESET} ${COL_CYAN}(v$ver)${COL_RESET}"
+                        [ -n "$desc" ] && echo -e "${COL_DIM}$desc${COL_RESET}"
+                        
+                        local pkg_type="aur"
+                        [[ "$name" =~ -(git|svn|hg|bzr)$ ]] && pkg_type="devel"
+                        echo -e "${COL_YELLOW}└─ Available in AUR [${COL_CYAN}$pkg_type${COL_RESET}]"
+                        echo
+                    fi
                     
                     found_any=true
                 done < <(echo "$response" | jq -r '.results[] | "\(.Name)\t\(.Version)\t\(.Description // "")"' 2>/dev/null)
@@ -296,13 +323,18 @@ search_aur_remote() {
                         [ -n "${seen_packages[$name]}" ] && continue
                         seen_packages[$name]=1
                         
-                        echo -e "${COL_RED}$X_MARK $name${COL_RESET} ${COL_CYAN}(v$ver)${COL_RESET}"
-                        [ -n "$desc" ] && echo -e "${COL_DIM}$desc${COL_RESET}"
-                        
-                        local pkg_type="aur"
-                        [[ "$name" =~ -(git|svn|hg|bzr)$ ]] && pkg_type="devel"
-                        echo -e "${COL_YELLOW}└─ Available in AUR [${COL_CYAN}$pkg_type${COL_RESET}]"
-                        echo
+                        # Simple mode - just the name
+                        if [ "$simple_mode" = true ]; then
+                            echo "$name"
+                        else
+                            echo -e "${COL_RED}$X_MARK $name${COL_RESET} ${COL_CYAN}(v$ver)${COL_RESET}"
+                            [ -n "$desc" ] && echo -e "${COL_DIM}$desc${COL_RESET}"
+                            
+                            local pkg_type="aur"
+                            [[ "$name" =~ -(git|svn|hg|bzr)$ ]] && pkg_type="devel"
+                            echo -e "${COL_YELLOW}└─ Available in AUR [${COL_CYAN}$pkg_type${COL_RESET}]"
+                            echo
+                        fi
                         
                         found_any=true
                     done < <(echo "$response" | jq -r '.results[]? | "\(.Name)\t\(.Version)\t\(.Description // "")"' 2>/dev/null)
@@ -311,7 +343,10 @@ search_aur_remote() {
         done
     fi
     
-    [ "$found_any" = false ] && echo -e "${COL_RED}$X_MARK No packages found in AUR${COL_RESET}\n"
+    # Don't show "not found" message in simple mode
+    if [ "$found_any" = false ] && [ "$simple_mode" = false ]; then
+        echo -e "${COL_RED}$X_MARK No packages found in AUR${COL_RESET}\n"
+    fi
 }
 
 # Show help
@@ -326,6 +361,7 @@ Options:
     -r, --remote        Include remote packages in search
     -d, --desc          Search package descriptions
     -e, --exact         Match package names exactly
+    -s, --simple        Simple output (package names only, one per line)
     --exclude-aur       Exclude AUR packages
     --exclude-arch      Exclude official packages
 
@@ -334,6 +370,8 @@ Examples:
     pacheck -r node             # Include remote packages
     pacheck -d compression      # Search descriptions
     pacheck -e wine             # Exact match only
+    pacheck -s lib              # Simple output (names only)
+    pacheck -rs python          # Remote search, simple output
 EOF
 }
 
@@ -359,6 +397,10 @@ main() {
                 search_desc=false
                 shift
                 ;;
+            -s|--simple)
+                simple_mode=true
+                shift
+                ;;
             --exclude-aur)
                 exclude_aur=true
                 shift
@@ -368,10 +410,11 @@ main() {
                 shift
                 ;;
             -*)
-                # Handle combined flags like -rd
+                # Handle combined flags like -rd, -rs, etc.
                 if [[ "$1" =~ r ]]; then check_remote=true; fi
                 if [[ "$1" =~ d ]]; then search_desc=true; fi
                 if [[ "$1" =~ e ]]; then exact_match=true; search_desc=false; fi
+                if [[ "$1" =~ s ]]; then simple_mode=true; fi
                 shift
                 ;;
             *)
@@ -387,7 +430,10 @@ main() {
         exit 1
     fi
     
-    echo -e "${COL_BOLD}Searching for: ${search_terms[*]}${COL_RESET}\n"
+    # Don't show header in simple mode
+    if [ "$simple_mode" = false ]; then
+        echo -e "${COL_BOLD}Searching for: ${search_terms[*]}${COL_RESET}\n"
+    fi
     
     # Populate all caches upfront
     populate_caches
@@ -405,17 +451,20 @@ main() {
             matches_search "$pkg" "$desc" || continue
             
             if [ "$found_official" = false ]; then
-                echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
-                echo -e "${COL_BOLD}${COL_CYAN}Official Repositories Installed:${COL_RESET}"
-                echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+                if [ "$simple_mode" = false ]; then
+                    echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+                    echo -e "${COL_BOLD}${COL_CYAN}Official Repositories Installed:${COL_RESET}"
+                    echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+                fi
                 found_official=true
             fi
             
             display_installed_pkg "$pkg"
         done
         
-        [ "$found_official" = false ] && [ "$exclude_aur" = true ] && \
+        if [ "$found_official" = false ] && [ "$exclude_aur" = true ] && [ "$simple_mode" = false ]; then
             echo -e "${COL_RED}$X_MARK No installed packages found${COL_RESET}\n"
+        fi
     fi
     
     # Process installed AUR packages
@@ -439,9 +488,11 @@ main() {
         if [ ${#matching_aur_packages[@]} -gt 0 ]; then
             fetch_all_aur_versions "${matching_aur_packages[@]}"
             
-            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
-            echo -e "${COL_BOLD}${COL_YELLOW}AUR Installed:${COL_RESET}"
-            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+            if [ "$simple_mode" = false ]; then
+                echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+                echo -e "${COL_BOLD}${COL_YELLOW}AUR Installed:${COL_RESET}"
+                echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+            fi
             
             # Now display all matching packages
             for pkg in "${matching_aur_packages[@]}"; do
@@ -464,24 +515,29 @@ main() {
                 matches_search "$pkg" "${official_descriptions[$pkg]}" || continue
                 
                 if [ "$found_remote" = false ]; then
-                    echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
-                    echo -e "${COL_BOLD}${COL_BLUE}Official Repositories Available:${COL_RESET}"
-                    echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+                    if [ "$simple_mode" = false ]; then
+                        echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+                        echo -e "${COL_BOLD}${COL_BLUE}Official Repositories Available:${COL_RESET}"
+                        echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+                    fi
                     found_remote=true
                 fi
                 
                 display_remote_pkg "$pkg"
             done
             
-            [ "$found_remote" = false ] && [ "$exclude_aur" = true ] && \
+            if [ "$found_remote" = false ] && [ "$exclude_aur" = true ] && [ "$simple_mode" = false ]; then
                 echo -e "${COL_RED}$X_MARK No remote packages found${COL_RESET}\n"
+            fi
         fi
         
         # AUR remote packages
         if [ "$exclude_aur" = false ]; then
-            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
-            echo -e "${COL_BOLD}${COL_YELLOW}AUR Available:${COL_RESET}"
-            echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+            if [ "$simple_mode" = false ]; then
+                echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+                echo -e "${COL_BOLD}${COL_YELLOW}AUR Available:${COL_RESET}"
+                echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
+            fi
             
             search_aur_remote
         fi

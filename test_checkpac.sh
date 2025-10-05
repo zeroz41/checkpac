@@ -111,7 +111,7 @@ run_test() {
     elif [ $exit_code -ne 0 ] && [ "$test_cmd" != "--help" ] && [ "$test_cmd" != "-h" ]; then
         test_passed=false
         failure_reason="Exit code $exit_code"
-    elif [ "$expect_output" = "true" ] && [ $output_lines -lt 2 ]; then
+    elif [ "$expect_output" = "true" ] && [ $output_lines -lt 1 ]; then
         test_passed=false
         failure_reason="No output (${output_lines} lines)"
     fi
@@ -177,6 +177,49 @@ validate_exact_match() {
     # For exact match, should not have partial matches
     local pkg_name=$(echo "$cmd" | grep -oE '[^ ]+$')
     ! echo "$output" | grep -E "^[[:space:]]*[✓✗]" | grep -vE "^[[:space:]]*[✓✗] $pkg_name " 2>/dev/null
+}
+
+validate_simple_mode() {
+    local output="$1"
+    local cmd="$2"
+    
+    # Simple mode should have:
+    # 1. No ANSI color codes
+    # 2. No Unicode symbols (✓, ✗, etc.)
+    # 3. No version numbers in parentheses
+    # 4. No dividers/headers
+    # 5. Just package names, one per line
+    
+    # Check for ANSI codes (should be absent)
+    if echo "$output" | grep -qE '\x1b\['; then
+        return 1
+    fi
+    
+    # Check for common formatting characters
+    if echo "$output" | grep -qE '[✓✗→]|v[0-9]|\(|\)'; then
+        return 1
+    fi
+    
+    # Check for dividers or headers
+    if echo "$output" | grep -qE '────|Official|AUR|Available|Installed|Source'; then
+        return 1
+    fi
+    
+    # Each line should be a simple package name (alphanumeric, hyphens, underscores, dots)
+    # Allow empty lines
+    local has_invalid_line=false
+    while IFS= read -r line; do
+        # Skip empty lines
+        [ -z "$line" ] && continue
+        
+        # Check if line matches package name pattern
+        if ! [[ "$line" =~ ^[a-zA-Z0-9._+-]+$ ]]; then
+            has_invalid_line=true
+            break
+        fi
+    done <<< "$output"
+    
+    [ "$has_invalid_line" = false ]
 }
 
 # Performance benchmark function
@@ -365,28 +408,45 @@ main() {
     run_test "Multiple search terms" "bash git"
     run_test "Non-existent package" "$NONEXISTENT" false
     
-    # Test 3: Description search
+    # Test 3: Simple mode tests - CRITICAL
+    print_section "SIMPLE MODE (-s flag) - CRITICAL"
+    run_test "Simple mode basic" "-s $INSTALLED_PKG" true 10 validate_simple_mode
+    run_test "Simple mode partial" "-s lib" true 10 validate_simple_mode
+    run_test "Simple mode multiple terms" "-s bash git" true 10 validate_simple_mode
+    run_test "Simple with exact match" "-se $EXACT_PKG" true 10 validate_simple_mode
+    run_test "Simple with description search" "-sd lib" true 10 validate_simple_mode
+    
+    # Test 4: Simple mode combined flags
+    print_section "SIMPLE MODE COMBINED FLAGS"
+    run_test "Simple + Remote (-rs)" "-rs python" true 15 validate_simple_mode
+    run_test "Simple + Remote + Desc (-rds)" "-rds compression" true 15 validate_simple_mode
+    run_test "Simple + Remote + Exact (-rse)" "-rse $EXACT_PKG" true 15 validate_simple_mode
+    run_test "Simple + Description (-sd)" "-sd archive" true 10 validate_simple_mode
+    run_test "Simple with exclusion (--exclude-aur -s)" "--exclude-aur -s lib" true 10 validate_simple_mode
+    
+    # Test 5: Description search
     print_section "DESCRIPTION SEARCH (-d flag)"
     run_test "Description search single term" "-d $DESC_KEYWORD" true 10 validate_description_search
     run_test "Description with partial name" "-d lib"
     run_test "Description with multiple terms" "-d compression archive"
     
-    # Test 4: Exact match
+    # Test 6: Exact match
     print_section "EXACT MATCH (-e flag)"
     run_test "Exact match existing" "-e $EXACT_PKG" true 10 validate_exact_match
     run_test "Exact match non-existing" "-e $NONEXISTENT" false
     run_test "Exact overrides description" "-ed $EXACT_PKG"
     run_test "Multiple exact matches" "-e bash git"
     
-    # Test 5: Combined flag tests (CRITICAL)
+    # Test 7: Combined flag tests (CRITICAL)
     print_section "COMBINED FLAGS - CRITICAL TESTS"
     run_test "Combined -rd (remote + desc)" "-rd compression" true 15 validate_description_search
     run_test "Combined -rd with multiple terms" "-rd python ruby" true 15 validate_multiple_terms
     run_test "Combined -re (remote + exact)" "-re $EXACT_PKG" true 15 validate_exact_match
     run_test "Combined -rde (all flags)" "-rde $EXACT_PKG" true 15
     run_test "Combined short flags (-dr same as -rd)" "-dr lib" true 15
+    run_test "Combined -rds (remote + desc + simple)" "-rds lib" true 15 validate_simple_mode
     
-    # Test 6: Remote search with combinations
+    # Test 8: Remote search with combinations
     if [ "$TEST_MODE" != "quick" ]; then
         print_section "REMOTE SEARCH COMBINATIONS (-r flag)"
         run_test "Remote search basic" "-r python" true 15 validate_remote_search
@@ -395,22 +455,25 @@ main() {
         run_test "Remote non-existent" "-r $NONEXISTENT" true 10
         run_test "Remote with multiple packages" "-r python ruby nodejs" true 20
         run_test "Remote desc with multiple terms" "-rd archive extract compress" true 20
+        run_test "Remote simple mode" "-rs lib" true 15 validate_simple_mode
     fi
     
-    # Test 7: Exclusion flags with combinations
+    # Test 9: Exclusion flags with combinations
     print_section "EXCLUSION FLAGS WITH COMBINATIONS"
     run_test "Exclude AUR basic" "--exclude-aur $PARTIAL_NAME"
     run_test "Exclude Arch repos basic" "--exclude-arch $AUR_PKG"
     run_test "Exclude AUR with description" "--exclude-aur -d compression"
     run_test "Exclude Arch with exact" "--exclude-arch -e $AUR_PKG"
+    run_test "Exclude AUR with simple" "--exclude-aur -s lib" true 10 validate_simple_mode
     
     if [ "$TEST_MODE" != "quick" ]; then
         run_test "Exclude AUR with remote" "-r --exclude-aur python" true 15
         run_test "Exclude Arch with remote" "-r --exclude-arch lib" true 20
         run_test "Both exclusions (should show nothing)" "--exclude-aur --exclude-arch bash" false
+        run_test "Exclude + simple + remote" "-rs --exclude-aur lib" true 15 validate_simple_mode
     fi
     
-    # Test 8: Multiple search terms with all flags
+    # Test 10: Multiple search terms with all flags
     print_section "MULTIPLE SEARCH TERMS - ADVANCED"
     run_test "Multiple terms basic" "python ruby"
     run_test "Multiple with description" "-d python ruby"
@@ -418,8 +481,10 @@ main() {
     run_test "Multiple with remote" "-r python ruby nodejs" true 20
     run_test "Multiple with -rd" "-rd browser editor terminal" true 20
     run_test "Multiple with exclusions" "--exclude-aur python ruby perl"
+    run_test "Multiple with simple" "-s python ruby" true 10 validate_simple_mode
+    run_test "Multiple with simple + remote" "-rs python ruby" true 20 validate_simple_mode
     
-    # Test 9: Edge cases
+    # Test 11: Edge cases
     if [ "$TEST_MODE" = "full" ] || [ "$TEST_MODE" = "interactive" ]; then
         print_section "EDGE CASES & STRESS TESTS"
         run_test "Very long search term" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" false
@@ -428,12 +493,13 @@ main() {
         run_test "Unicode in search" "café"
         run_test "Empty string with quotes" '""' false
         run_test "Many search terms" "a b c d e f g h i j k l" true 15
+        run_test "Simple mode with special chars" "-s lib*" true 10 validate_simple_mode
         
         # Test interrupt handling
         test_interrupt
     fi
     
-    # Test 10: AUR-specific tests (if yay/paru is installed)
+    # Test 12: AUR-specific tests (if yay/paru is installed)
     if command -v yay &>/dev/null || command -v paru &>/dev/null; then
         if [ "$TEST_MODE" != "quick" ]; then
             print_section "AUR FUNCTIONALITY"
@@ -443,6 +509,8 @@ main() {
             run_test "AUR remote search" "-r brave-bin" true 20
             run_test "AUR remote with description" "-rd browser" true 20
             run_test "AUR VCS package handling" "-r wine-git" true 15
+            run_test "AUR simple mode" "-s $AUR_PKG" true 10 validate_simple_mode
+            run_test "AUR remote simple" "-rs brave-bin" true 20 validate_simple_mode
         fi
     else
         echo -e "\n${YELLOW}Note: AUR tests skipped (no AUR helper found)${RESET}"
@@ -457,19 +525,21 @@ main() {
         run_performance_test "Partial search" "lib" 3
         run_performance_test "Description search" "-d compression" 3
         run_performance_test "Exact match" "-e git" 5
+        run_performance_test "Simple mode" "-s lib" 5
         
         # Remote performance tests
         if [ "$TEST_MODE" = "performance" ]; then
             run_performance_test "Remote search" "-r python" 3
             run_performance_test "Remote with desc" "-rd editor" 3
             run_performance_test "Multiple remote" "-r python ruby nodejs" 3
+            run_performance_test "Remote simple" "-rs python" 3
         fi
         
         # AUR batch optimization test
         test_aur_batch_performance
     fi
     
-    # Test 11: Specific validation tests
+    # Test 13: Specific validation tests
     if [ "$TEST_MODE" = "full" ]; then
         print_section "VALIDATION TESTS"
         
@@ -488,6 +558,24 @@ main() {
             echo -e "  ✓ Remote search: ${GREEN}Working${RESET}"
         else
             echo -e "  ✗ Remote search: ${YELLOW}May not be working${RESET}"
+        fi
+        
+        echo -e "\n${CYAN}Validating simple mode output format:${RESET}"
+        output=$(timeout 10 $SCRIPT_PATH -s lib 2>/dev/null)
+        
+        # Count lines and check format
+        local line_count=$(echo "$output" | wc -l)
+        local has_colors=$(echo "$output" | grep -c $'\x1b\[' || true)
+        local has_symbols=$(echo "$output" | grep -c '[✓✗]' || true)
+        
+        echo -e "  Lines: $line_count"
+        echo -e "  Color codes: $has_colors"
+        echo -e "  Symbols: $has_symbols"
+        
+        if [ $has_colors -eq 0 ] && [ $has_symbols -eq 0 ]; then
+            echo -e "  ✓ Simple mode format: ${GREEN}Correct${RESET}"
+        else
+            echo -e "  ✗ Simple mode format: ${RED}Contains formatting${RESET}"
         fi
         
         echo -e "\n${CYAN}Validating multiple search terms:${RESET}"
