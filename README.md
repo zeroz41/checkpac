@@ -101,7 +101,10 @@ View the help menu :)
 checkpac -h
 ```
 
--Simple output(list every found package in line by line scriptable output. can be combined with any flags:
+-     Simple output(list every found package in line by line scriptable output. can be combined with any flags:
+
+- Use -s flag.
+- 
 <img width="1271" height="599" alt="image" src="https://github.com/user-attachments/assets/ab49ea2c-7c12-4fb8-934b-17988316db90" />
 
 
@@ -114,7 +117,8 @@ checkpac -h
 |------|-------------|
 | `-r`, `--remote` | Include packages from repositories |
 | `-d`, `--desc` | Search package descriptions |
-| `-e`, `--exact` | Match package names exactly |
+| `-e`, `--exact` | Match package names exactly |     
+| `-s`, `--simple` | List packages line by line with NAME ONLY, for simple usage in scripting |
 | `--exclude-aur` | Skip AUR packages |
 | `--exclude-arch` | Skip official repository packages |
 
