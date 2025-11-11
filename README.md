@@ -33,6 +33,10 @@ cd checkpac
 makepkg -si
 ```
 
+help menu
+<img width="1271" height="599" alt="image" src="https://github.com/user-attachments/assets/3b8e963c-a581-4672-bbe3-99f8644a3709" />
+
+
 ### Manual Installation
 
 Clone the repository:
@@ -96,6 +100,10 @@ View the help menu :)
 ```bash
 checkpac -h
 ```
+
+-Simple output(list every found package in line by line scriptable output. can be combined with any flags:
+<img width="1271" height="599" alt="image" src="https://github.com/user-attachments/assets/ab49ea2c-7c12-4fb8-934b-17988316db90" />
+
 
 
 ## Advanced Features
