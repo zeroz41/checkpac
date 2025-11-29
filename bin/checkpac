@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Optimized pacheck - Fast parallel package checker for Arch Linux
+# Optimized checkpac - Fast parallel package checker for Arch Linux
 # Made by zeroz/tj - Optimized version with fast AUR batch checking
 
 # Dependencies: expac, curl, jq
@@ -401,9 +401,9 @@ search_aur_remote() {
 # Show help
 show_help() {
     cat <<EOF
-pacheck - Fast package checker for Arch Linux
+checkpac - Fast package checker for Arch Linux
 
-Usage: pacheck [options] <search-terms...>
+Usage: checkpac [options] <search-terms...>
 
 Options:
     -h, --help          Show this help message
@@ -415,12 +415,12 @@ Options:
     --exclude-arch      Exclude official packages
 
 Examples:
-    pacheck python              # Search installed for "python"
-    pacheck -r node             # Include remote packages
-    pacheck -d compression      # Search descriptions
-    pacheck -e wine             # Exact match only
-    pacheck -s lib              # Simple output (names only)
-    pacheck -rs python          # Remote search, simple output
+    checkpac python              # Search installed for "python"
+    checkpac -r node             # Include remote packages
+    checkpac -d compression      # Search descriptions
+    checkpac -e wine             # Exact match only
+    checkpac -s lib              # Simple output (names only)
+    checkpac -rs python          # Remote search, simple output
 EOF
 }
 
