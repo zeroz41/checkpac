@@ -44,6 +44,7 @@ declare -gA official_repos
 declare -gA official_descriptions
 declare -gA aur_installed
 declare -gA aur_remote_versions  # Cache for AUR remote versions
+declare -gA aur_queried_packages  # Track which packages we actually queried AUR for
 
 # Cleanup handler
 cleanup() {
@@ -67,6 +68,36 @@ get_repo_color() {
 # Fast version comparison
 version_differs() {
     [[ "$1" != "$2" ]]
+}
+
+# Highlight the changed portion of a new version
+# Usage: highlight_version_diff "old_ver" "new_ver"
+# Returns the new version with changed parts highlighted in green
+highlight_version_diff() {
+    local old_ver="$1"
+    local new_ver="$2"
+    
+    # Find common prefix length
+    local i=0
+    local max_len=${#old_ver}
+    [[ ${#new_ver} -lt $max_len ]] && max_len=${#new_ver}
+    
+    while [[ $i -lt $max_len ]] && [[ "${old_ver:$i:1}" == "${new_ver:$i:1}" ]]; do
+        ((i++))
+    done
+    
+    # Back up to last separator (., -, _) for cleaner highlighting
+    while [[ $i -gt 0 ]] && [[ ! "${new_ver:$i-1:1}" =~ [.\-_] ]]; do
+        ((i--))
+    done
+    
+    # If no common prefix or diverged at start, highlight entire new version
+    if [[ $i -eq 0 ]]; then
+        echo -e "${COL_GREEN}$new_ver${COL_RESET}"
+    else
+        # Print common prefix dim, changed part in green
+        echo -e "${COL_DIM}${new_ver:0:$i}${COL_RESET}${COL_GREEN}${new_ver:$i}${COL_RESET}"
+    fi
 }
 
 # Populate all caches in single passes
@@ -138,7 +169,7 @@ display_installed_pkg() {
     if [ -z "$remote_ver" ]; then
         echo -e " ${COL_YELLOW}$WARNING Unable to check${COL_RESET}"
     elif version_differs "$current_ver" "$remote_ver"; then
-        echo -e " ${COL_YELLOW}$UP_ARROW Update: v$current_ver → v$remote_ver${COL_RESET}"
+        echo -e " ${COL_YELLOW}$UP_ARROW Update: v$current_ver${COL_RESET} → v$(highlight_version_diff "$current_ver" "$remote_ver")"
     else
         echo -e " ${COL_GREEN}$CHECK_MARK Up to date${COL_RESET}"
     fi
@@ -157,6 +188,9 @@ fetch_all_aur_versions() {
     for pkg in "${packages[@]}"; do
         # Skip VCS packages as they're always "latest"
         [[ "$pkg" =~ -(git|svn|hg|bzr)$ ]] && continue
+        
+        # Mark this package as queried (we'll check AUR for it)
+        aur_queried_packages[$pkg]=1
         
         if [ "$first" = true ]; then
             url="${url}?arg[]=$(echo -n "$pkg" | jq -sRr @uri)"
@@ -200,24 +234,39 @@ display_aur_pkg() {
     echo -e "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$ver)${COL_RESET}"
     [ -n "$desc" ] && echo -e "${COL_DIM}$desc${COL_RESET}"
     
-    local pkg_type="aur"
-    [[ "$pkg" =~ -(git|svn|hg|bzr)$ ]] && pkg_type="devel"
+    # Determine package type:
+    # - VCS packages (-git, -svn, etc): "devel"
+    # - Queried but not found in AUR: "local" 
+    # - Found in AUR: "aur"
+    local is_vcs=false
+    local is_local=false
     
-    echo -ne "${COL_YELLOW}└─ Source: AUR [${COL_CYAN}$pkg_type${COL_RESET}]"
+    if [[ "$pkg" =~ -(git|svn|hg|bzr)$ ]]; then
+        is_vcs=true
+    elif [[ -n "${aur_queried_packages[$pkg]}" && -z "${aur_remote_versions[$pkg]}" ]]; then
+        # We queried AUR for this package but it wasn't in the results
+        is_local=true
+    fi
     
-    # Check for updates (skip for VCS packages as they're always "latest")
-    if [[ ! "$pkg" =~ -(git|svn|hg|bzr)$ ]]; then
+    # Display based on type
+    if [ "$is_local" = true ]; then
+        echo -ne "${COL_MAGENTA}└─ Source: Local [${COL_CYAN}local${COL_RESET}${COL_MAGENTA}]"
+        echo -e " ${COL_DIM}(not tracked in AUR)${COL_RESET}"
+    elif [ "$is_vcs" = true ]; then
+        echo -ne "${COL_YELLOW}└─ Source: AUR [${COL_CYAN}devel${COL_RESET}${COL_YELLOW}]"
+        echo -e " ${COL_DIM}(VCS package - always latest)${COL_RESET}"
+    else
+        echo -ne "${COL_YELLOW}└─ Source: AUR [${COL_CYAN}aur${COL_RESET}${COL_YELLOW}]${COL_RESET}"
+        
         local remote_ver="${aur_remote_versions[$pkg]}"
         
         if [ -z "$remote_ver" ]; then
             echo -e " ${COL_YELLOW}$WARNING Unable to check${COL_RESET}"
         elif version_differs "$ver" "$remote_ver"; then
-            echo -e " ${COL_YELLOW}$UP_ARROW Update: v$ver → v$remote_ver${COL_RESET}"
+            echo -e " ${COL_YELLOW}$UP_ARROW Update: v$ver${COL_RESET} → v$(highlight_version_diff "$ver" "$remote_ver")"
         else
             echo -e " ${COL_GREEN}$CHECK_MARK Up to date${COL_RESET}"
         fi
-    else
-        echo -e " ${COL_DIM}(VCS package - always latest)${COL_RESET}"
     fi
     
     echo
@@ -490,7 +539,7 @@ main() {
             
             if [ "$simple_mode" = false ]; then
                 echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
-                echo -e "${COL_BOLD}${COL_YELLOW}AUR Installed:${COL_RESET}"
+                echo -e "${COL_BOLD}${COL_YELLOW}AUR/Local Installed:${COL_RESET}"
                 echo -e "${COL_YELLOW}$DIVIDER${COL_RESET}"
             fi
             
