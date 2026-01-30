@@ -11,7 +11,7 @@ A fast and simple package checking tool for Arch Linux. Quickly find installed p
 - **Check multiple packages at once** - checkpac firefox chrome vim
 - **Fast results** - efficient parallel searching for quick lookups
 - **Clear, readable output** - color-coded information shows status at a glance
-- **Version checking** - easily see available updates. Arch repos check against synced package caches, while AUR check against AUR RPC Endpoint
+- **Version checking** - easily see available updates. Arch repos check against remote official repos, while AUR check against AUR RPC Endpoint
 - **AUR support** - No aur helper needed to be installed. Paginates requests to AUR to be able to return large lists of results if required
 
 ## Installation
