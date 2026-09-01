@@ -35,6 +35,7 @@ declare -g exclude_arch=false
 declare -g exact_match=false
 declare -g check_remote=false
 declare -g simple_mode=false
+declare -g current_time=""
 declare -ga search_terms=()
 
 # Data caches - populated once
@@ -42,8 +43,12 @@ declare -gA installed_versions
 declare -gA official_versions
 declare -gA official_repos
 declare -gA official_descriptions
+declare -gA official_build_dates
 declare -gA aur_installed
-declare -gA aur_remote_versions  # Cache for AUR remote versions
+declare -gA aur_remote_versions  # Cache for AUR remote metadata
+declare -gA aur_last_modified
+declare -gA aur_popularity
+declare -gA aur_votes
 declare -gA aur_queried_packages  # Track which packages we actually queried AUR for
 
 # Cleanup handler
@@ -53,21 +58,139 @@ cleanup() {
     exit 0
 }
 
-trap cleanup SIGINT SIGTERM EXIT
-
 # Get repo color
 get_repo_color() {
+    local value
     case "$1" in
-        core) echo -e "${COL_RED}core${COL_RESET}" ;;
-        extra) echo -e "${COL_GREEN}extra${COL_RESET}" ;;
-        multilib) echo -e "${COL_CYAN}multilib${COL_RESET}" ;;
-        *) echo -e "${COL_MAGENTA}$1${COL_RESET}" ;;
+        core) value="${COL_RED}core${COL_RESET}" ;;
+        extra) value="${COL_GREEN}extra${COL_RESET}" ;;
+        multilib) value="${COL_CYAN}multilib${COL_RESET}" ;;
+        *) value="${COL_MAGENTA}$1${COL_RESET}" ;;
     esac
+
+    if [ -n "${2:-}" ]; then
+        printf -v "$2" '%b' "$value"
+    else
+        echo -e "$value"
+    fi
 }
 
 # Fast version comparison
 version_differs() {
     [[ "$1" != "$2" ]]
+}
+
+# Turn a Unix timestamp into a compact, human-readable age.
+format_age() {
+    local timestamp=$1
+    local output_var=${2:-}
+    local now=${CHECKPAC_NOW:-${current_time:-$(date +%s)}}
+
+    [[ "$timestamp" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 1
+    [ "$timestamp" -gt 0 ] || return 1
+
+    local elapsed=$((now - timestamp))
+    [ "$elapsed" -gt 0 ] || {
+        if [ -n "$output_var" ]; then
+            printf -v "$output_var" '%s' "just now"
+        else
+            echo "just now"
+        fi
+        return
+    }
+
+    local value unit result
+    if [ "$elapsed" -lt 60 ]; then
+        if [ -n "$output_var" ]; then
+            printf -v "$output_var" '%s' "just now"
+        else
+            echo "just now"
+        fi
+        return
+    elif [ "$elapsed" -lt 3600 ]; then
+        value=$((elapsed / 60))
+        unit="minute"
+    elif [ "$elapsed" -lt 86400 ]; then
+        value=$((elapsed / 3600))
+        unit="hour"
+    elif [ "$elapsed" -lt 604800 ]; then
+        value=$((elapsed / 86400))
+        unit="day"
+    elif [ "$elapsed" -lt 2629800 ]; then
+        value=$((elapsed / 604800))
+        unit="week"
+    elif [ "$elapsed" -lt 31557600 ]; then
+        value=$((elapsed / 2629800))
+        unit="month"
+    else
+        value=$((elapsed / 31557600))
+        unit="year"
+    fi
+
+    [ "$value" -ne 1 ] && unit="${unit}s"
+    result="$value $unit ago"
+    if [ -n "$output_var" ]; then
+        printf -v "$output_var" '%s' "$result"
+    else
+        echo "$result"
+    fi
+}
+
+# Add freshness without consuming another terminal line.
+display_update_age() {
+    local age
+    format_age "$1" age || return
+    echo -ne " ${COL_DIM}· Updated $age${COL_RESET}"
+}
+
+# Exact names sort first, followed by prefix matches, then other matches.
+package_relevance() {
+    local name=${1,,}
+    local output_var=${2:-}
+    local term
+    local result=2
+
+    for term in "${search_terms[@]}"; do
+        [ "$name" = "${term,,}" ] && {
+            result=0
+            break
+        }
+    done
+
+    if [ "$result" -ne 0 ]; then
+        for term in "${search_terms[@]}"; do
+            [[ "$name" == "${term,,}"* ]] && {
+                result=1
+                break
+            }
+        done
+    fi
+
+    if [ -n "$output_var" ]; then
+        printf -v "$output_var" '%s' "$result"
+    else
+        echo "$result"
+    fi
+}
+
+sort_package_names_by_relevance() {
+    local name relevance
+    for name in "$@"; do
+        package_relevance "$name" relevance
+        printf '%s\t%s\n' "$relevance" "$name"
+    done | LC_ALL=C sort -t $'\t' -k1,1n -k2,2 | cut -f2-
+}
+
+sort_aur_package_names() {
+    local name relevance
+    for name in "$@"; do
+        package_relevance "$name" relevance
+        printf '%s\t%s\t%s\t%s\n' \
+            "$relevance" \
+            "${aur_popularity[$name]:-0}" \
+            "${aur_votes[$name]:-0}" \
+            "$name"
+    done | LC_ALL=C sort -t $'\t' -k1,1n -k2,2gr -k3,3nr -k4,4 | cut -f4-
 }
 
 # Highlight the changed portion of a new version
@@ -114,11 +237,12 @@ populate_caches() {
     
     # Get official repo data in one expac call
     if command -v expac &>/dev/null; then
-        while IFS=$'\t' read -r name ver repo desc; do
+        while IFS=$'\t' read -r name ver repo build_date desc; do
             official_versions[$name]=$ver
             official_repos[$name]=$repo
+            official_build_dates[$name]=$build_date
             official_descriptions[$name]=$desc
-        done < <(expac -S '%n\t%v\t%r\t%d' 2>/dev/null)
+        done < <(expac -S --timefmt=%s '%n\t%v\t%r\t%b\t%d' 2>/dev/null)
     fi
 }
 
@@ -159,20 +283,24 @@ display_installed_pkg() {
     local remote_ver="${official_versions[$pkg]}"
     local repo="${official_repos[$pkg]}"
     local desc="${official_descriptions[$pkg]}"
+    local repo_color
+    get_repo_color "$repo" repo_color
     
     echo -e "${COL_GREEN}$CHECK_MARK $pkg${COL_RESET} ${COL_CYAN}(v$current_ver)${COL_RESET}"
     
     [ -n "$desc" ] && echo -e "${COL_DIM}$desc${COL_RESET}"
     
-    echo -ne "${COL_BLUE}└─ Source: Official [$(get_repo_color "$repo")]"
+    echo -ne "${COL_BLUE}└─ Source: Official [$repo_color]"
     
     if [ -z "$remote_ver" ]; then
-        echo -e " ${COL_YELLOW}$WARNING Unable to check${COL_RESET}"
+        echo -ne " ${COL_YELLOW}$WARNING Unable to check${COL_RESET}"
     elif version_differs "$current_ver" "$remote_ver"; then
-        echo -e " ${COL_YELLOW}$UP_ARROW Update: v$current_ver${COL_RESET} → v$(highlight_version_diff "$current_ver" "$remote_ver")"
+        echo -ne " ${COL_YELLOW}$UP_ARROW Update: v$current_ver${COL_RESET} → v$(highlight_version_diff "$current_ver" "$remote_ver")"
     else
-        echo -e " ${COL_GREEN}$CHECK_MARK Up to date${COL_RESET}"
+        echo -ne " ${COL_GREEN}$CHECK_MARK Up to date${COL_RESET}"
     fi
+    display_update_age "${official_build_dates[$pkg]}"
+    echo
     echo
 }
 
@@ -181,17 +309,14 @@ fetch_all_aur_versions() {
     local -a packages=("$@")
     [ ${#packages[@]} -eq 0 ] && return
     
-    # Build URL with all packages (excluding VCS packages)
+    # Build one URL for all packages.
     local url="https://aur.archlinux.org/rpc/v5/info"
     local first=true
     
     for pkg in "${packages[@]}"; do
-        # Skip VCS packages as they're always "latest"
-        [[ "$pkg" =~ -(git|svn|hg|bzr)$ ]] && continue
-        
-        # Mark this package as queried (we'll check AUR for it)
+        # Preserve the existing offline behavior for foreign packages.
         aur_queried_packages[$pkg]=1
-        
+
         if [ "$first" = true ]; then
             url="${url}?arg[]=$(echo -n "$pkg" | jq -sRr @uri)"
             first=false
@@ -200,17 +325,44 @@ fetch_all_aur_versions() {
         fi
     done
     
-    # If all packages were VCS, return
-    [ "$first" = true ] && return
-    
-    # Fetch all versions in one request
-    local response=$(curl -s "$url" 2>/dev/null)
-    
-    if [ -n "$response" ]; then
-        while IFS=$'\t' read -r name version; do
-            [ -n "$name" ] && aur_remote_versions[$name]=$version
-        done < <(echo "$response" | jq -r '.results[] | "\(.Name)\t\(.Version)"' 2>/dev/null)
+    # Fetch all metadata in one request
+    local response=$(curl -fsSL --connect-timeout 2 --max-time 5 "$url" 2>/dev/null)
+
+    if [ -n "$response" ] && echo "$response" | jq -e '.type == "multiinfo"' &>/dev/null; then
+        while IFS=$'\x1f' read -r name version last_modified popularity votes; do
+            [ -z "$name" ] && continue
+            aur_remote_versions[$name]=$version
+            aur_last_modified[$name]=$last_modified
+            aur_popularity[$name]=$popularity
+            aur_votes[$name]=$votes
+        done < <(echo "$response" | jq -r '.results[] | [
+            .Name,
+            .Version,
+            (.LastModified // 0),
+            (.Popularity // 0),
+            (.NumVotes // 0)
+        ] | join("\u001f")' 2>/dev/null)
     fi
+}
+
+# Append AUR freshness and popularity to an existing source/status line.
+display_aur_metadata() {
+    local pkg=$1
+    [ -n "${aur_last_modified[$pkg]}" ] || return
+
+    local popularity=${aur_popularity[$pkg]:-0}
+    local votes=${aur_votes[$pkg]:-0}
+    local vote_label="votes"
+    local formatted_popularity
+
+    [ "$votes" -eq 1 ] && vote_label="vote"
+    LC_NUMERIC=C printf -v formatted_popularity '%.2f' "$popularity"
+    if [ "$formatted_popularity" = "0.00" ] && [ "$popularity" != "0" ]; then
+        formatted_popularity="<0.01"
+    fi
+
+    display_update_age "${aur_last_modified[$pkg]}"
+    echo -ne " ${COL_DIM}· $votes $vote_label · Pop. $formatted_popularity${COL_RESET}"
 }
 
 # Display AUR package (now uses pre-fetched versions)
@@ -254,19 +406,23 @@ display_aur_pkg() {
         echo -e " ${COL_DIM}(not tracked in AUR)${COL_RESET}"
     elif [ "$is_vcs" = true ]; then
         echo -ne "${COL_YELLOW}└─ Source: AUR [${COL_CYAN}devel${COL_RESET}${COL_YELLOW}]"
-        echo -e " ${COL_DIM}(VCS package - always latest)${COL_RESET}"
+        echo -ne " ${COL_DIM}(VCS package - always latest)${COL_RESET}"
+        display_aur_metadata "$pkg"
+        echo
     else
         echo -ne "${COL_YELLOW}└─ Source: AUR [${COL_CYAN}aur${COL_RESET}${COL_YELLOW}]${COL_RESET}"
         
         local remote_ver="${aur_remote_versions[$pkg]}"
         
         if [ -z "$remote_ver" ]; then
-            echo -e " ${COL_YELLOW}$WARNING Unable to check${COL_RESET}"
+            echo -ne " ${COL_YELLOW}$WARNING Unable to check${COL_RESET}"
         elif version_differs "$ver" "$remote_ver"; then
-            echo -e " ${COL_YELLOW}$UP_ARROW Update: v$ver${COL_RESET} → v$(highlight_version_diff "$ver" "$remote_ver")"
+            echo -ne " ${COL_YELLOW}$UP_ARROW Update: v$ver${COL_RESET} → v$(highlight_version_diff "$ver" "$remote_ver")"
         else
-            echo -e " ${COL_GREEN}$CHECK_MARK Up to date${COL_RESET}"
+            echo -ne " ${COL_GREEN}$CHECK_MARK Up to date${COL_RESET}"
         fi
+        display_aur_metadata "$pkg"
+        echo
     fi
     
     echo
@@ -285,115 +441,92 @@ display_remote_pkg() {
     local ver="${official_versions[$pkg]}"
     local repo="${official_repos[$pkg]}"
     local desc="${official_descriptions[$pkg]}"
+    local repo_color
+    get_repo_color "$repo" repo_color
     
     echo -e "${COL_RED}$X_MARK $pkg${COL_RESET} ${COL_CYAN}(v$ver)${COL_RESET}"
     [ -n "$desc" ] && echo -e "${COL_DIM}$desc${COL_RESET}"
-    echo -e "${COL_BLUE}└─ Available in [$(get_repo_color "$repo")]${COL_RESET}"
+    echo -ne "${COL_BLUE}└─ Available in [$repo_color]${COL_RESET}"
+    display_update_age "${official_build_dates[$pkg]}"
+    echo
     echo
 }
 
-# Search AUR via RPC - handles multiple search terms with OR logic
+# Search AUR via RPC, then rank combined results by relevance and popularity.
 search_aur_remote() {
-    local found_any=false
-    declare -A seen_packages  # Use associative array for faster lookups
-    
+    declare -A result_versions=()
+    declare -A result_descriptions=()
+
     # Debug mode - uncomment to see API calls
     # local debug=true
     local debug=false
-    
-    # For exact match mode, search each term separately
-    if [ "$exact_match" = true ]; then
-        for term in "${search_terms[@]}"; do
-            local url="https://aur.archlinux.org/rpc/v5/search/$(echo -n "$term" | jq -sRr @uri)?by=name"
-            [ "$debug" = true ] && echo "Debug: Searching AUR (exact) for: $term" >&2
-            [ "$debug" = true ] && echo "Debug: URL: $url" >&2
-            
-            local response=$(curl -s "$url" 2>/dev/null)
-            [ "$debug" = true ] && echo "Debug: Response length: ${#response}" >&2
-            
-            if [ -n "$response" ]; then
-                while IFS=$'\t' read -r name ver desc; do
-                    # For exact match, skip if name doesn't exactly match (case-insensitive)
-                    if [[ "${name,,}" != "${term,,}" ]]; then
-                        continue
-                    fi
-                    
-                    # Skip if already installed
-                    [ -n "${installed_versions[$name]}" ] && continue
-                    
-                    # Skip if already shown
-                    [ -n "${seen_packages[$name]}" ] && continue
-                    seen_packages[$name]=1
-                    
-                    # Simple mode - just the name
-                    if [ "$simple_mode" = true ]; then
-                        echo "$name"
-                    else
-                        echo -e "${COL_RED}$X_MARK $name${COL_RESET} ${COL_CYAN}(v$ver)${COL_RESET}"
-                        [ -n "$desc" ] && echo -e "${COL_DIM}$desc${COL_RESET}"
-                        
-                        local pkg_type="aur"
-                        [[ "$name" =~ -(git|svn|hg|bzr)$ ]] && pkg_type="devel"
-                        echo -e "${COL_YELLOW}└─ Available in AUR [${COL_CYAN}$pkg_type${COL_RESET}]"
-                        echo
-                    fi
-                    
-                    found_any=true
-                done < <(echo "$response" | jq -r '.results[] | "\(.Name)\t\(.Version)\t\(.Description // "")"' 2>/dev/null)
+    local term by_field url response
+
+    for term in "${search_terms[@]}"; do
+        by_field="name"
+        [ "$search_desc" = true ] && by_field="name-desc"
+
+        url="https://aur.archlinux.org/rpc/v5/search/$(echo -n "$term" | jq -sRr @uri)?by=$by_field"
+        [ "$debug" = true ] && echo "Debug: Searching AUR for: $term (field: $by_field)" >&2
+        [ "$debug" = true ] && echo "Debug: URL: $url" >&2
+
+        response=$(curl -fsSL --connect-timeout 2 --max-time 5 "$url" 2>/dev/null)
+        [ "$debug" = true ] && echo "Debug: Response length: ${#response}" >&2
+        [ -z "$response" ] && continue
+
+        while IFS=$'\x1f' read -r name ver desc last_modified popularity votes; do
+            [ -z "$name" ] && continue
+            [ -n "${installed_versions[$name]}" ] && continue
+
+            # The RPC search is fuzzy; exact mode still needs a client-side check.
+            if [ "$exact_match" = true ] && [[ "${name,,}" != "${term,,}" ]]; then
+                continue
             fi
-        done
-    else
-        # For non-exact match, search each term and combine results
-        for term in "${search_terms[@]}"; do
-            local by_field="name"
-            [ "$search_desc" = true ] && by_field="name-desc"
-            
-            local url="https://aur.archlinux.org/rpc/v5/search/$(echo -n "$term" | jq -sRr @uri)?by=$by_field"
-            [ "$debug" = true ] && echo "Debug: Searching AUR for: $term (field: $by_field)" >&2
-            [ "$debug" = true ] && echo "Debug: URL: $url" >&2
-            
-            local response=$(curl -s "$url" 2>/dev/null)
-            [ "$debug" = true ] && echo "Debug: Response length: ${#response}" >&2
-            
-            if [ -n "$response" ]; then
-                # Check if we got valid JSON with results
-                local result_count=$(echo "$response" | jq -r '.resultcount // 0' 2>/dev/null)
-                [ "$debug" = true ] && echo "Debug: Result count: $result_count" >&2
-                
-                if [ "$result_count" != "0" ]; then
-                    while IFS=$'\t' read -r name ver desc; do
-                        # Skip if empty name
-                        [ -z "$name" ] && continue
-                        
-                        # Skip if already installed
-                        [ -n "${installed_versions[$name]}" ] && continue
-                        
-                        # Skip if we've already shown this package
-                        [ -n "${seen_packages[$name]}" ] && continue
-                        seen_packages[$name]=1
-                        
-                        # Simple mode - just the name
-                        if [ "$simple_mode" = true ]; then
-                            echo "$name"
-                        else
-                            echo -e "${COL_RED}$X_MARK $name${COL_RESET} ${COL_CYAN}(v$ver)${COL_RESET}"
-                            [ -n "$desc" ] && echo -e "${COL_DIM}$desc${COL_RESET}"
-                            
-                            local pkg_type="aur"
-                            [[ "$name" =~ -(git|svn|hg|bzr)$ ]] && pkg_type="devel"
-                            echo -e "${COL_YELLOW}└─ Available in AUR [${COL_CYAN}$pkg_type${COL_RESET}]"
-                            echo
-                        fi
-                        
-                        found_any=true
-                    done < <(echo "$response" | jq -r '.results[]? | "\(.Name)\t\(.Version)\t\(.Description // "")"' 2>/dev/null)
-                fi
-            fi
-        done
+
+            result_versions[$name]=$ver
+            result_descriptions[$name]=$desc
+            aur_last_modified[$name]=$last_modified
+            aur_popularity[$name]=$popularity
+            aur_votes[$name]=$votes
+        done < <(echo "$response" | jq -r '.results[]? | [
+            .Name,
+            .Version,
+            (.Description // ""),
+            (.LastModified // 0),
+            (.Popularity // 0),
+            (.NumVotes // 0)
+        ] | join("\u001f")' 2>/dev/null)
+    done
+
+    local -a sorted_results=()
+    if [ ${#result_versions[@]} -gt 0 ]; then
+        mapfile -t sorted_results < <(
+            sort_aur_package_names "${!result_versions[@]}"
+        )
     fi
-    
+
+    local name ver desc pkg_type
+    for name in "${sorted_results[@]}"; do
+        if [ "$simple_mode" = true ]; then
+            echo "$name"
+            continue
+        fi
+
+        ver=${result_versions[$name]}
+        desc=${result_descriptions[$name]}
+        pkg_type="aur"
+        [[ "$name" =~ -(git|svn|hg|bzr)$ ]] && pkg_type="devel"
+
+        echo -e "${COL_RED}$X_MARK $name${COL_RESET} ${COL_CYAN}(v$ver)${COL_RESET}"
+        [ -n "$desc" ] && echo -e "${COL_DIM}$desc${COL_RESET}"
+        echo -ne "${COL_YELLOW}└─ Available in AUR [${COL_CYAN}$pkg_type${COL_RESET}${COL_YELLOW}]${COL_RESET}"
+        display_aur_metadata "$name"
+        echo
+        echo
+    done
+
     # Don't show "not found" message in simple mode
-    if [ "$found_any" = false ] && [ "$simple_mode" = false ]; then
+    if [ ${#sorted_results[@]} -eq 0 ] && [ "$simple_mode" = false ]; then
         echo -e "${COL_RED}$X_MARK No packages found in AUR${COL_RESET}\n"
     fi
 }
@@ -486,12 +619,18 @@ main() {
     
     # Populate all caches upfront
     populate_caches
+    current_time=$(date +%s)
+
+    local -a sorted_installed_packages=()
+    mapfile -t sorted_installed_packages < <(
+        printf '%s\n' "${!installed_versions[@]}" | LC_ALL=C sort
+    )
     
     # Process installed official packages
     if [ "$exclude_arch" = false ]; then
         local found_official=false
         
-        for pkg in "${!installed_versions[@]}"; do
+        for pkg in "${sorted_installed_packages[@]}"; do
             # Skip AUR packages
             [ -n "${aur_installed[$pkg]}" ] && continue
             
@@ -535,6 +674,9 @@ main() {
         
         # Batch fetch all AUR versions at once
         if [ ${#matching_aur_packages[@]} -gt 0 ]; then
+            mapfile -t matching_aur_packages < <(
+                printf '%s\n' "${matching_aur_packages[@]}" | LC_ALL=C sort
+            )
             fetch_all_aur_versions "${matching_aur_packages[@]}"
             
             if [ "$simple_mode" = false ]; then
@@ -554,7 +696,7 @@ main() {
     if [ "$check_remote" = true ]; then
         # Official remote packages
         if [ "$exclude_arch" = false ]; then
-            local found_remote=false
+            local -a matching_official_packages=()
             
             for pkg in "${!official_versions[@]}"; do
                 # Skip installed
@@ -562,20 +704,24 @@ main() {
                 
                 # Check match
                 matches_search "$pkg" "${official_descriptions[$pkg]}" || continue
-                
-                if [ "$found_remote" = false ]; then
-                    if [ "$simple_mode" = false ]; then
-                        echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
-                        echo -e "${COL_BOLD}${COL_BLUE}Official Repositories Available:${COL_RESET}"
-                        echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
-                    fi
-                    found_remote=true
-                fi
-                
-                display_remote_pkg "$pkg"
+                matching_official_packages+=("$pkg")
             done
-            
-            if [ "$found_remote" = false ] && [ "$exclude_aur" = true ] && [ "$simple_mode" = false ]; then
+
+            if [ ${#matching_official_packages[@]} -gt 0 ]; then
+                mapfile -t matching_official_packages < <(
+                    sort_package_names_by_relevance "${matching_official_packages[@]}"
+                )
+
+                if [ "$simple_mode" = false ]; then
+                    echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+                    echo -e "${COL_BOLD}${COL_BLUE}Official Repositories Available:${COL_RESET}"
+                    echo -e "${COL_BLUE}$DIVIDER${COL_RESET}"
+                fi
+
+                for pkg in "${matching_official_packages[@]}"; do
+                    display_remote_pkg "$pkg"
+                done
+            elif [ "$exclude_aur" = true ] && [ "$simple_mode" = false ]; then
                 echo -e "${COL_RED}$X_MARK No remote packages found${COL_RESET}\n"
             fi
         fi
@@ -593,4 +739,7 @@ main() {
     fi
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    trap cleanup SIGINT SIGTERM EXIT
+    main "$@"
+fi
